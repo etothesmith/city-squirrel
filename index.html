@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>City Squirrel: East End</title>
+<meta name="description" content="A noir 2.5D beat-'em-up. One squirrel, ten districts, the whole East End Syndicate. Free to play in your browser.">
+<meta property="og:title" content="City Squirrel: East End">
+<meta property="og:description" content="A noir 2.5D beat-'em-up. One squirrel, ten districts, the whole East End Syndicate. Free to play in your browser.">
+<meta property="og:image" content="assets/og.jpg">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#07070b">
+<link rel="icon" href="assets/logo_small.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#07070b; --bg2:#0e0e15; --line:#23232e; --ink:#e9e6df; --mute:#9a97a3;
+  --red:#d8382f; --amber:#f2b33d; --cyan:#58c7e8;
+  --display:'Bebas Neue',Impact,sans-serif; --mono:'IBM Plex Mono',ui-monospace,monospace; --body:Inter,system-ui,sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 var(--body);overflow-x:hidden}
+img{max-width:100%;display:block}
+a{color:inherit}
+.wrap{max-width:1180px;margin:0 auto;padding:0 20px}
+
+/* nav */
+nav{position:fixed;inset:0 0 auto 0;z-index:10;display:flex;align-items:center;justify-content:space-between;padding:12px 20px;background:linear-gradient(#07070bee,#07070b00)}
+nav .brand{font:22px var(--display);letter-spacing:.06em;text-decoration:none}
+nav .brand b{color:var(--red);font-weight:400}
+nav .links{display:flex;gap:22px;font:13px var(--mono);text-transform:uppercase;letter-spacing:.08em}
+nav .links a{text-decoration:none;color:var(--mute)}
+nav .links a:hover{color:var(--ink)}
+@media(max-width:700px){nav .links a:not(.cta-s){display:none}}
+.cta-s{color:var(--ink)!important;border:1px solid var(--red);padding:4px 12px}
+
+/* hero */
+.hero{position:relative;min-height:100vh;display:flex;align-items:center;overflow:hidden}
+.hero .bg{position:absolute;inset:0;background:url(assets/title.jpg) center/cover no-repeat;transform:scale(1.04);animation:drift 22s ease-in-out infinite alternate}
+@keyframes drift{to{transform:scale(1.1) translateX(-1.5%)}}
+.hero::after{content:"";position:absolute;inset:0;background:
+  linear-gradient(90deg,#07070bf2 0%,#07070bc0 38%,#07070b10 70%),
+  linear-gradient(0deg,var(--bg) 0%,#07070b00 30%)}
+.rain{position:absolute;inset:0;z-index:1;pointer-events:none;opacity:.35;background-image:repeating-linear-gradient(105deg,transparent 0 22px,#ffffff14 22px 23px);background-size:200% 200%;animation:rain .6s linear infinite}
+@keyframes rain{to{background-position:-60px 200px}}
+.hero .wrap{position:relative;z-index:2;width:100%}
+.hero .logo{width:min(520px,86vw);filter:drop-shadow(0 10px 30px #000)}
+.hero p.tag{font:600 13px var(--mono);letter-spacing:.2em;text-transform:uppercase;color:var(--amber);margin:6px 0 10px}
+.hero p.lede{max-width:520px;font-size:18px;color:#d6d2ca;margin:0 0 28px}
+.btns{display:flex;gap:14px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:10px;font:26px var(--display);letter-spacing:.08em;text-decoration:none;padding:12px 30px 10px;border:2px solid var(--ink);transition:.15s}
+.btn.primary{background:var(--red);border-color:var(--red);box-shadow:0 0 0 0 #d8382f66;animation:pulse 2.4s infinite}
+.btn.primary:hover{background:#ef4a40;transform:translateY(-2px)}
+.btn.ghost:hover{background:#ffffff12}
+@keyframes pulse{70%{box-shadow:0 0 0 16px #d8382f00}100%{box-shadow:0 0 0 0 #d8382f00}}
+.hero .note{font:12px var(--mono);color:var(--mute);margin-top:14px}
+
+/* sections */
+section{padding:90px 0}
+.kicker{font:600 12px var(--mono);letter-spacing:.24em;text-transform:uppercase;color:var(--red);margin:0 0 6px}
+h2{font:clamp(40px,6vw,64px)/1 var(--display);letter-spacing:.03em;margin:0 0 18px}
+.sub{color:var(--mute);max-width:640px;margin:0 0 40px}
+
+/* story */
+.story{display:grid;grid-template-columns:1.1fr 1fr;gap:48px;align-items:center}
+.story blockquote{margin:0;font:22px/1.5 var(--body);color:#e2ded6;border-left:3px solid var(--red);padding-left:22px}
+.story blockquote em{color:var(--amber);font-style:normal}
+.story .frame{border:1px solid var(--line);box-shadow:0 30px 60px #000a}
+@media(max-width:860px){.story{grid-template-columns:1fr}}
+
+/* features */
+.feat{display:grid;grid-template-columns:repeat(2,1fr);gap:28px}
+@media(max-width:760px){.feat{grid-template-columns:1fr}}
+.card{background:var(--bg2);border:1px solid var(--line);overflow:hidden;transition:.2s}
+.card:hover{border-color:#3a3a4a;transform:translateY(-3px)}
+.card img{aspect-ratio:16/9;object-fit:cover;width:100%}
+.card div{padding:18px 20px 22px}
+.card h3{font:28px var(--display);letter-spacing:.04em;margin:0 0 4px}
+.card p{margin:0;color:var(--mute);font-size:15px}
+
+/* levels */
+.levels{display:grid;grid-template-columns:repeat(5,1fr);gap:14px}
+@media(max-width:1000px){.levels{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:600px){.levels{grid-template-columns:repeat(2,1fr)}}
+.lv{position:relative;background:var(--bg2);border:1px solid var(--line);overflow:hidden}
+.lv img{aspect-ratio:16/10;object-fit:cover;width:100%;filter:saturate(.85) brightness(.85);transition:.3s}
+.lv:hover img{filter:none;transform:scale(1.05)}
+.lv .meta{padding:10px 12px 12px}
+.lv .n{font:600 11px var(--mono);color:var(--red);letter-spacing:.12em}
+.lv .t{font:20px/1.05 var(--display);letter-spacing:.03em;margin:2px 0 4px}
+.lv .b{font:11px var(--mono);color:var(--mute)}
+
+/* moves + controls */
+.two{display:grid;grid-template-columns:1fr 1fr;gap:40px}
+@media(max-width:860px){.two{grid-template-columns:1fr}}
+.moves{list-style:none;margin:0;padding:0}
+.moves li{padding:14px 0;border-bottom:1px solid var(--line)}
+.moves b{font:22px var(--display);letter-spacing:.04em;color:var(--amber);display:block}
+.moves span{color:var(--mute);font-size:15px}
+table{width:100%;border-collapse:collapse;font:14px var(--mono)}
+td{padding:9px 6px;border-bottom:1px solid var(--line)}
+td:first-child{color:var(--mute)}
+kbd{display:inline-block;min-width:26px;text-align:center;padding:2px 7px;margin:0 2px 2px 0;border:1px solid #444;border-bottom-width:3px;border-radius:4px;background:#15151d;font:600 12px var(--mono);color:var(--ink)}
+.pad{margin-top:14px;font:13px var(--mono);color:var(--mute)}
+
+/* final cta */
+.final{text-align:center;background:radial-gradient(ellipse at center,#2a0d0c 0%,var(--bg) 70%)}
+.final h2{font-size:clamp(48px,8vw,90px)}
+.final .btns{justify-content:center}
+footer{padding:30px 0 40px;border-top:1px solid var(--line);font:12px var(--mono);color:var(--mute)}
+footer .wrap{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
+
+.reveal{opacity:0;transform:translateY(24px);transition:opacity .7s,transform .7s}
+.reveal.in{opacity:1;transform:none}
+@media(prefers-reduced-motion:reduce){.hero .bg,.rain,.btn.primary{animation:none}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+
+<nav>
+  <a class="brand" href="#">CITY <b>SQUIRREL</b></a>
+  <div class="links">
+    <a href="#story">Story</a><a href="#features">Features</a><a href="#districts">Districts</a><a href="#controls">Controls</a>
+    <a class="cta-s" href="play.html">Play</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="bg"></div><div class="rain"></div>
+  <div class="wrap">
+    <img class="logo" src="assets/logo.png" alt="City Squirrel: East End">
+    <p class="tag">A noir beat-'em-up · Free in your browser</p>
+    <p class="lede">The East End Syndicate owns every alley, dock and rooftop in the city. One squirrel with a grappling hook and a bad attitude is taking it all back, one block at a time.</p>
+    <div class="btns">
+      <a class="btn primary" href="play.html">▶ Play now</a>
+      <a class="btn ghost" href="#features">See the game</a>
+    </div>
+    <p class="note">Keyboard, gamepad or touch · Desktop recommended · About 6&nbsp;MB, saves progress locally</p>
+  </div>
+</header>
+
+<main>
+<section id="story">
+  <div class="wrap story">
+    <div class="reveal">
+      <p class="kicker">The case file</p>
+      <h2>Ten districts. One night shift.</h2>
+      <blockquote>The Kingpin's crews run the rats, the cats and the crows. They took the parks, then the streets, then the people who looked out for them. <em>Barnaby</em> fixes the gear, <em>Brindle</em> works the radio, <em>Pip</em> knows every shortcut. You do the rest.</blockquote>
+    </div>
+    <img class="frame reveal" src="assets/shot_boss.jpg" alt="Showdown with the Kingpin in the penthouse vault" loading="lazy">
+  </div>
+</section>
+
+<section id="features" style="background:var(--bg2)">
+  <div class="wrap">
+    <p class="kicker">How it plays</p>
+    <h2>Built like the arcade brawlers</h2>
+    <p class="sub">A 2.5D belt-scroller with four layers of parallax, arena lock-ins that open into full 3D rooms, and a combat system deep enough to style on the Syndicate.</p>
+    <div class="feat">
+      <article class="card reveal"><img src="assets/shot_street.jpg" alt="Street brawl in the back alley" loading="lazy"><div><h3>Street brawling</h3><p>Jab, cross, roundhouse and tailspin combos. Counter the red “!” telegraph, juggle into the air and finish them off against a wall or a wrecked car.</p></div></article>
+      <article class="card reveal"><img src="assets/shot_arena.jpg" alt="Arena lock-in at the cargo docks" loading="lazy"><div><h3>Arena lock-ins</h3><p>The camera pushes into a 3D room and the doors slam shut. Clear the waves, use the props and keep moving.</p></div></article>
+      <article class="card reveal"><img src="assets/shot_flying.jpg" alt="Grappling and disarming enemies on the rooftops" loading="lazy"><div><h3>Grapple &amp; glide</h3><p>Yank thugs to you, zip to the heavies, rip weapons out of their hands, ride car roofs, then spread your arms and dive-bomb from above.</p></div></article>
+      <article class="card reveal"><img src="assets/shot_highway.jpg" alt="Fighting a crowd on the broken highway" loading="lazy"><div><h3>Street Cred</h3><p>Pipes, claws, chains, crowbars. Mix up your moves to push your rank from Dirty to Awesome, then spend your acorns in the Stash.</p></div></article>
+    </div>
+  </div>
+</section>
+
+<section id="districts">
+  <div class="wrap">
+    <p class="kicker">The case board</p>
+    <h2>From the back alleys to the penthouse</h2>
+    <p class="sub">Ten hand-painted districts, each with its own crew and a boss who doesn't go down easy.</p>
+    <div class="levels" id="lv"></div>
+  </div>
+</section>
+
+<section id="controls" style="background:var(--bg2)">
+  <div class="wrap two">
+    <div class="reveal">
+      <p class="kicker">Moveset</p>
+      <h2>Fight dirty</h2>
+      <ul class="moves">
+        <li><b>Counter</b><span>When a red “!” pops over a thug, hit heavy to reverse the swing and strip his weapon.</span></li>
+        <li><b>Grapple</b><span>Pull small fry in, zip yourself to big ones for a dropkick, or snag a weapon off the floor.</span></li>
+        <li><b>Disarm</b><span>Weapons have durability. Steal them, swing them, then throw what's left.</span></li>
+        <li><b>Flying Squirrel</b><span>Smash a ★ crate for a Golden Acorn. Then hold jump to glide, ride the vents, and press down + attack to dive-bomb.</span></li>
+        <li><b>Bio-Surge</b><span>Fill the meter, then hit special to clear the screen.</span></li>
+      </ul>
+    </div>
+    <div class="reveal">
+      <p class="kicker">Controls</p>
+      <h2>Keyboard</h2>
+      <table>
+        <tr><td>Move</td><td><kbd>WASD</kbd> or <kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd></td></tr>
+        <tr><td>Jump / glide</td><td><kbd>Space</kbd></td></tr>
+        <tr><td>Attack</td><td><kbd>J</kbd> <kbd>Z</kbd></td></tr>
+        <tr><td>Heavy</td><td><kbd>K</kbd> <kbd>X</kbd></td></tr>
+        <tr><td>Grapple</td><td><kbd>L</kbd> <kbd>C</kbd></td></tr>
+        <tr><td>Dodge</td><td><kbd>Shift</kbd> <kbd>V</kbd></td></tr>
+        <tr><td>Pick up / throw</td><td><kbd>E</kbd> / <kbd>Q</kbd></td></tr>
+        <tr><td>Bio-Surge</td><td><kbd>F</kbd> <kbd>B</kbd></td></tr>
+        <tr><td>Pause / mute</td><td><kbd>Esc</kbd> / <kbd>M</kbd></td></tr>
+      </table>
+      <p class="pad">Gamepads work out of the box. On phones and tablets, on-screen buttons appear automatically; landscape works best.</p>
+    </div>
+  </div>
+</section>
+
+<section class="final">
+  <div class="wrap">
+    <h2>The East End is waiting.</h2>
+    <div class="btns"><a class="btn primary" href="play.html">▶ Play City Squirrel</a></div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>City Squirrel: East End · original characters and art · made with HTML5 canvas</span>
+    <span><a href="https://github.com/etothesmith/city-squirrel">Source on GitHub</a></span>
+  </div>
+</footer>
+
+<script>
+const L=[["East End Back Alley","Big Gnash"],["Abandoned Subway Station","Nine-Lives Nadia"],["Chop-Shop & Scrapyard","Crowbar Rocco"],["Toxic Storm Drain","Old Snapper"],["Harbor Cargo Docks","Brutus Chainz"],["Cold-Storage Warehouse","Slick Vex"],["Chemical Refinery Lab","The Magistrate"],["Broken Highway Overpass","Deadeye Corvin"],["High-Rise Rooftop Sprawl","Nadia & Vex"],["Syndicate Penthouse Vault","The Kingpin"]];
+const box=document.getElementById('lv');
+L.forEach(([t,b],i)=>{const n=String(i+1).padStart(2,'0');const d=document.createElement('div');d.className='lv reveal';
+d.innerHTML=`<img src="assets/levels/l${n}.jpg" alt="${t}" loading="lazy"><div class="meta"><div class="n">LEVEL ${i+1}</div><div class="t">${t}</div><div class="b">vs ${b}</div></div>`;box.appendChild(d);});
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}}),{threshold:.12});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+</script>
+</body>
+</html>
