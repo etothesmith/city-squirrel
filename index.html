@@ -78,6 +78,10 @@ h2{font:clamp(40px,6vw,64px)/1 var(--display);letter-spacing:.03em;margin:0 0 18
 @media(max-width:760px){.feat{grid-template-columns:1fr}}
 .card{background:var(--bg2);border:1px solid var(--line);overflow:hidden;transition:.2s}
 .card:hover{border-color:#3a3a4a;transform:translateY(-3px)}
+.card.wide{grid-column:1/-1;display:grid;grid-template-columns:1.6fr 1fr;align-items:center}
+.card.wide img{aspect-ratio:16/9;height:100%}
+.card.wide h3{font-size:36px;color:var(--amber)}
+@media(max-width:760px){.card.wide{grid-template-columns:1fr}}
 .card img{aspect-ratio:16/9;object-fit:cover;width:100%}
 .card div{padding:18px 20px 22px}
 .card h3{font:28px var(--display);letter-spacing:.04em;margin:0 0 4px}
@@ -162,6 +166,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
     <h2>Built like the arcade brawlers</h2>
     <p class="sub">A 2.5D belt-scroller with four layers of parallax, arena lock-ins that open into full 3D rooms, and a combat system deep enough to style on the Syndicate.</p>
     <div class="feat">
+      <article class="card wide reveal"><img src="assets/shot_rooftops.jpg" alt="Swinging across a rooftop gap on the grappling hook" loading="lazy"><div><h3>New: Rooftop detours</h3><p>Every level now climbs above the street. Swing across gaps on crane hooks and power lines, chain swings in mid-air, and knock the Syndicate off the ledge. Indoor levels swap the rooftops for girders and catwalks over the pit.</p></div></article>
       <article class="card reveal"><img src="assets/shot_street.jpg" alt="Street brawl in the back alley" loading="lazy"><div><h3>Street brawling</h3><p>Jab, cross, roundhouse and tailspin combos. Counter the red “!” telegraph, juggle into the air and finish them off against a wall or a wrecked car.</p></div></article>
       <article class="card reveal"><img src="assets/shot_arena.jpg" alt="Arena lock-in at the cargo docks" loading="lazy"><div><h3>Arena lock-ins</h3><p>The camera pushes into a 3D room and the doors slam shut. Clear the waves, use the props and keep moving.</p></div></article>
       <article class="card reveal"><img src="assets/shot_flying.jpg" alt="Grappling and disarming enemies on the rooftops" loading="lazy"><div><h3>Grapple &amp; glide</h3><p>Yank thugs to you, zip to the heavies, rip weapons out of their hands, ride car roofs, then spread your arms and dive-bomb from above.</p></div></article>
@@ -188,6 +193,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
         <li><b>Counter</b><span>When a red “!” pops over a thug, hit heavy to reverse the swing and strip his weapon.</span></li>
         <li><b>Grapple</b><span>Pull small fry in, zip yourself to big ones for a dropkick, or snag a weapon off the floor.</span></li>
         <li><b>Disarm</b><span>Weapons have durability. Steal them, swing them, then throw what's left.</span></li>
+        <li><b>Swing</b><span>On the rooftops, press grapple at a gap to swing. Hold left or right to pump, jump to let go, and grapple again in mid-air to chain to the next hook.</span></li>
         <li><b>Flying Squirrel</b><span>Smash a ★ crate for a Golden Acorn. Then hold jump to glide, ride the vents, and press down + attack to dive-bomb.</span></li>
         <li><b>Bio-Surge</b><span>Fill the meter, then hit special to clear the screen.</span></li>
       </ul>

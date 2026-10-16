@@ -10,6 +10,7 @@ A noir 2.5D beat-'em-up that runs in the browser. One squirrel with a grappling 
 - Belt-scroller brawling with four-layer parallax and arena lock-ins that open into 3D rooms
 - Combos, counters, disarms, weapon throws and finishers
 - Grappling hook: yank thugs, zip to heavies, pull crates, ride car roofs
+- Rooftop detours in every level: swing across gaps, chain swings mid-air, knock thugs off the ledge (girders and catwalks on the indoor levels)
 - Flying Squirrel power-up: glide, ride vents, dive-bomb
 - Ten districts and ten bosses, a Street Cred rank system and an Acorn Stash for upgrades
 - Keyboard, gamepad and touch controls; progress saves in your browser

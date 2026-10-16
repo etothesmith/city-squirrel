@@ -445,13 +445,15 @@ class Stage {
   build() {
     const L = this.L, r = this.rng, Z0 = STREET.zMin, Z1 = STREET.zMax;
     const pool = L.pool, n = L.n;
-    const groups = [620, 1180, 1760, 2300, /* arena */ 3250, 3800, 4380, 4950];
+    const groups = [620, 1180, 1760, 2300, /* arena, then the rooftop detour */ 3950, 4450, 4980];
     const size = (i) => Math.min(6, 2 + Math.floor(n / 2.5) + (i % 2) + (i > 4 ? 1 : 0));
     groups.forEach((gx, i) => {
       const kinds = []; for (let k = 0; k < size(i); k++) kinds.push(pool[Math.floor(r() * pool.length)]);
       this.events.push({ x: gx, type: 'spawn', kinds, done: false });
     });
     this.events.push({ x: 2650, type: 'arena', done: false, boss: false });
+    this.events.push({ x: ROOF.ENTRY_X - 260, type: 'roof', done: false });
+    this.barrierX = ROOF.BARRIER_X; this.roofDone = false;
     this.events.push({ x: this.length - 300, type: 'arena', done: false, boss: true });
     this.events.sort((a, b) => a.x - b.x);
     // props: crates, trash cans, wrecks
@@ -465,6 +467,8 @@ class Stage {
     [1000, 3050, 4400].forEach(x => this.addProp('crate', x, Z0 + 60 + r() * 100, { golden: true }));
     // grapple perches (fire escapes / gantries) on the back lane
     for (let x = 900; x < this.length - 600; x += 900 + r() * 500) this.anchors.push({ x, z: Z0 - 6, h: 240, kind: 'perch' });
+    this.anchors = this.anchors.filter(a => Math.abs(a.x - ROOF.ENTRY_X) > 500);
+    this.anchors.push({ x: ROOF.ENTRY_X + 80, z: Z0 - 6, h: 300, kind: 'roofup' });
     if (L.vents) for (let x = 600; x < this.length - 600; x += 700 + r() * 500) this.vents.push({ x, z: Z0 + 40 + r() * 140, t: r() * 100 });
   }
   addProp(kind, x, z, opt = {}) {
@@ -477,19 +481,22 @@ class Stage {
   }
   // ---------------- geometry ----------------
   depthScale(z) {
+    if (this.mode === 'roof') return 0.95;
     if (this.mode === 'arena') { const a = this.L.arena; return lerp(0.52, 1.08, clamp((z - a.farY) / (712 - a.farY), 0, 1)); }
     return lerp(0.84, 1.04, clamp((z - STREET.zMin) / (STREET.zMax - STREET.zMin), 0, 1));
   }
-  zRange() { return this.mode === 'arena' ? [this.L.arena.farY + 4, 712] : [STREET.zMin, STREET.zMax]; }
+  zRange() { if (this.mode === 'roof') return this.band((G.hero && G.hero.pad) || this.pads[0]); return this.mode === 'arena' ? [this.L.arena.farY + 4, 712] : [STREET.zMin, STREET.zMax]; }
   xRange(z) {
+    if (this.mode === 'roof') { const P = (G.hero && G.hero.pad) || this.pads[0]; return [P.x0, P.x1]; }
     if (this.mode === 'arena') {
       const a = this.L.arena, t = clamp((z - a.farY) / (720 - a.farY), 0, 1);
       return [lerp(a.fx0, 30, t), lerp(a.fx1, W - 30, t)];
     }
     const lo = this.camX + 30, hi = (this.lockX != null ? Math.min(this.lockX, this.length) : this.length) + (this.lockX != null ? 0 : 0);
-    return [Math.max(30, lo), Math.min(hi, this.camX + W - 30)];
+    return [Math.max(30, lo), Math.min(hi, this.camX + W - 30, this.barrierX != null ? this.barrierX - 30 : 1e9)];
   }
   clamp(a, isHero) {
+    if (this.mode === 'roof') return this.clampRoof(a, isHero);
     const [z0, z1] = this.zRange(); a.z = clamp(a.z, z0, z1);
     const [x0, x1] = this.xRange(a.z);
     if (isHero || this.mode === 'arena') a.x = clamp(a.x, x0, x1);
@@ -515,18 +522,20 @@ class Stage {
       const target = clamp(p.x - W * 0.4 + p.dir * 60, 0, this.length - W);
       let tx = Math.max(this.camX, target);           // never scroll backwards (belt-scroller)
       if (this.lockX != null) tx = Math.min(tx, this.lockX - W + 40);
+      if (this.barrierX != null) tx = Math.min(tx, this.barrierX + 90 - W);
       this.camX = lerp(this.camX, tx, 0.12);
       // events
       for (const ev of this.events) {
         if (ev.done || p.x < ev.x - (ev.type === 'arena' ? 0 : 520)) continue;
         if (ev.type === 'spawn') { ev.done = true; g.spawnGroup(ev.kinds, ev.x); this.lockX = ev.x + 420; }
+        else if (ev.type === 'roof') { if (p.x >= ev.x && this.lockX == null && g.liveEnemies() === 0) { ev.done = true; g.toast('Street\'s barricaded! Grapple the fire escape (L) to take the rooftops'); g.after(200, () => { if (this.mode === 'street' && !this.roofDone) g.toast('Hold UP + L to aim at the fire escape'); }); } }
         else if (ev.type === 'arena' && this.lockX == null && g.liveEnemies() === 0) { ev.done = true; this.enterArena(g, ev.boss); }
       }
       if (this.lockX != null && g.liveEnemies() === 0) { this.lockX = null; g.go = 120; }
       this.updateTraffic(g);
-    }
+    } else if (this.mode === 'roof') this.updateRoof(g);
     for (const v of this.vents) v.t++;
-    for (const pr of this.props) { if (pr.shake > 0) pr.shake--; if (pr.car && !pr.dead && pr.hp < pr.maxHp * 0.5 && g.frame % (pr.hp < pr.maxHp * 0.25 ? 4 : 9) === 0) Particles.smoke(g, pr.x + rand(-30, 30), pr.z - pr.h * 0.7); if (pr.car && !pr.dead && pr.hp < pr.maxHp * 0.25 && g.frame % 3 === 0) Particles.fire(g, pr.x - pr.w * 0.25, pr.z - pr.h * 0.45); if (pr.burnT > 0) { pr.burnT--; if (g.frame % 5 === 0) Particles.fire(g, pr.x + rand(-40, 40), pr.z - rand(10, 60)); } }
+    for (const pr of this.allProps()) { if (pr.shake > 0) pr.shake--; if (pr.car && !pr.dead && pr.hp < pr.maxHp * 0.5 && g.frame % (pr.hp < pr.maxHp * 0.25 ? 4 : 9) === 0) Particles.smoke(g, pr.x + rand(-30, 30), pr.z - pr.h * 0.7); if (pr.car && !pr.dead && pr.hp < pr.maxHp * 0.25 && g.frame % 3 === 0) Particles.fire(g, pr.x - pr.w * 0.25, pr.z - pr.h * 0.45); if (pr.burnT > 0) { pr.burnT--; if (g.frame % 5 === 0) Particles.fire(g, pr.x + rand(-40, 40), pr.z - rand(10, 60)); } }
     for (const c of this.cars) c.update(g);
     this.cars = this.cars.filter(c => !c.gone);
   }
@@ -553,10 +562,19 @@ class Stage {
   updateTrans(g) {
     const T = this.trans; T.t++;
     if (T.phase === 'out') {
-      this.zoom = 1 + easeOut(T.t / T.dur) * 0.18;
+      if (T.slide) this.slideY = Math.pow(T.t / T.dur, 2) * 300 * T.slide; else this.zoom = 1 + easeOut(T.t / T.dur) * 0.18;
       if (T.t >= T.dur) {
         T.phase = 'in'; T.t = 0;
-        if (T.to === 'arena') {
+        if (T.to === 'roof') { this.startRoof(g); }
+        else if (T.fromRoof) {
+          this.mode = 'street'; this.roofDone = true; this.barrierX = null; this.roofLock = null; g.clearForArena(true);
+          for (const ev of this.events) if (ev.x < ROOF.RETURN_X) ev.done = true;
+          const p = g.hero; p.pad = null; p.overGap = false; p.swing = null; p.hook = null; p.perch = null; p.lastX = null;
+          p.x = ROOF.RETURN_X; p.z = (STREET.zMin + STREET.zMax) / 2; p.h = 560; p.vx = p.vz = p.vh = 0; p.state = 'dive'; p.st = 8; p.diveTarget = null; p.iframes = 70; p.dir = 1;
+          this.camX = clamp(p.x - W * 0.4, 0, this.length - W); g.cardTop = null; g.cardMain = null; g.card = 0;
+          g.after(40, () => g.toast('STREET DROP!'));
+        }
+        else if (T.to === 'arena') {
           this.mode = 'arena'; this.returnX = g.hero.x; this.cars = []; this.warn = null;
           g.clearForArena(); const p = g.hero; p.x = W / 2; p.z = 690; p.h = 0; p.vx = p.vz = 0;
           this.arenaProps();
@@ -567,8 +585,8 @@ class Stage {
         }
       }
     } else {
-      this.zoom = 1.12 - easeOut(T.t / T.dur) * 0.12;
-      if (T.t >= T.dur) { this.zoom = 1; this.trans = null; }
+      if (T.slide) this.slideY = -(1 - easeOut(T.t / T.dur)) * 300 * T.slide; else this.zoom = 1.12 - easeOut(T.t / T.dur) * 0.12;
+      if (T.t >= T.dur) { this.zoom = 1; this.slideY = 0; this.trans = null; }
     }
   }
   arenaProps() {
@@ -580,14 +598,16 @@ class Stage {
     this.ventsArena = (a.vents || []).map(([x, z]) => ({ x, z, t: Math.random() * 100 }));
   }
   mkArenaProp(kind, x, z) { const P = { kind, frame: kind === 'crate' ? 'item_crate' : 'item_trashcan', h: kind === 'crate' ? 74 : 70, hp: 1, breakable: true, liftable: kind === 'trashcan' ? 'trashcan' : null }; const f = Assets.meta[P.frame]; P.w = f.w * P.h / f.h; return Object.assign({ x, z, dead: false, shake: 0, maxHp: 1 }, P); }
-  allProps() { return this.mode === 'arena' ? (this.arenaPropsList || []) : this.props; }
-  allAnchors() { return this.mode === 'arena' ? (this.anchorsArena || []) : this.anchors; }
-  allVents() { return this.mode === 'arena' ? (this.ventsArena || []) : this.vents; }
+  allProps() { return this.mode === 'arena' ? (this.arenaPropsList || []) : this.mode === 'roof' ? (this.roofProps || []) : this.props; }
+  allAnchors() { return this.mode === 'arena' ? (this.anchorsArena || []) : this.mode === 'roof' ? (this.roofPerches || []) : this.anchors; }
+  allVents() { return this.mode === 'arena' ? (this.ventsArena || []) : this.mode === 'roof' ? (this.roofVents || []) : this.vents; }
 
   // ---------------- drawing ----------------
   drawBack(c, g) {
     c.save();
+    if (this.slideY) c.translate(0, this.slideY);
     if (this.zoom !== 1) { c.translate(W / 2, H * 0.62); c.scale(this.zoom, this.zoom); c.translate(-W / 2, -H * 0.62); }
+    if (this.mode === 'roof') { this.drawRoofBack(c, g); c.restore(); return; }
     if (this.mode === 'arena') {
       c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'high';
       if (this.arenaImg) c.drawImage(this.arenaImg, 0, 0, W, H);
@@ -617,7 +637,7 @@ class Stage {
     const img = this.layers[3]; if (!img) return;
     const h = 240, s = h / img.height, w = img.width * s, y = H - h * 0.5;
     let x0 = -((this.camX * LAYER_SPEED[3]) % w); if (x0 > 0) x0 -= w;
-    c.save(); c.globalAlpha = 0.72; c.imageSmoothingEnabled = true;
+    c.save(); if (this.slideY) c.translate(0, this.slideY); c.globalAlpha = 0.72; c.imageSmoothingEnabled = true;
     for (let x = x0; x < W; x += w) c.drawImage(img, Math.floor(x), y, Math.ceil(w) + 1, h);
     c.restore();
   }
@@ -633,15 +653,42 @@ class Stage {
   }
   drawAnchors(c, g) {
     const p = g.hero;
+    if (this.mode === 'roof') return this.drawRoofAnchors(c, g);
+    if (this.mode === 'street') this.drawRoofAccess(c, g);
     for (const a of this.allAnchors()) {
       if (!this.onScreen(a.x)) continue;
       const [sx, sy] = this.toScreen(a.x, a.z, a.h); const s = this.depthScale(a.z);
+      if (a.kind === 'roofup') continue;
       if (this.mode === 'street') { // fire-escape bracket drawn in code
         c.fillStyle = '#121216'; c.fillRect(sx - 60 * s, sy, 120 * s, 6 * s); for (let i = -56; i <= 56; i += 10) c.fillRect(sx + i * s, sy - 18 * s, 2, 18 * s);
         c.fillRect(sx - 60 * s, sy - 20 * s, 120 * s, 3); c.fillRect(sx - 58 * s, sy, 3, a.h * 0.6); c.fillRect(sx + 55 * s, sy, 3, a.h * 0.6);
       }
       const d = Math.abs(a.x - p.x), inRange = d < 520 && !p.perch;
       if (inRange) { c.strokeStyle = `rgba(255,214,120,${0.45 + 0.4 * Math.sin(g.time * 7)})`; c.lineWidth = 2; c.beginPath(); c.arc(sx, sy - 6, 15, 0, 7); c.stroke(); }
+    }
+  }
+  drawRoofAccess(c, g) {
+    const p = g.hero, a = this.anchors.find(k => k.kind === 'roofup');
+    if (a && this.onScreen(a.x, 300) && !this.roofDone) {
+      const [sx, sy] = this.toScreen(a.x, a.z, a.h), s = 1;
+      // fire-escape ladder climbing the wall to the roofline
+      c.fillStyle = '#141418'; c.fillRect(sx - 26, sy, 4, STREET.groundY - sy + 10); c.fillRect(sx + 22, sy, 4, STREET.groundY - sy + 10);
+      for (let y = sy + 8; y < STREET.groundY; y += 16) c.fillRect(sx - 26, y, 52, 3);
+      c.fillRect(sx - 70, sy - 4, 140, 7); for (let i = -66; i <= 66; i += 11) c.fillRect(sx + i, sy - 24, 2, 22); c.fillRect(sx - 70, sy - 26, 140, 3);
+      const pulse = 0.5 + 0.5 * Math.sin(g.time * 6);
+      c.save(); c.globalCompositeOperation = 'lighter'; const gl = c.createRadialGradient(sx, sy - 10, 4, sx, sy - 10, 90); gl.addColorStop(0, `rgba(255,210,120,${0.25 + 0.2 * pulse})`); gl.addColorStop(1, 'rgba(255,210,120,0)'); c.fillStyle = gl; c.fillRect(sx - 90, sy - 100, 180, 180); c.restore();
+      c.strokeStyle = `rgba(255,214,120,${0.6 + 0.4 * pulse})`; c.lineWidth = 3; c.beginPath(); c.arc(sx, sy - 10, 16 + 4 * pulse, 0, 7); c.stroke();
+      if (p.x > a.x - 900) { txt(c, '▲ ROOFTOPS', sx, sy - 44, 18, '#ffd36b', 'center'); txt(c, Input.touchMode ? 'tap HOOK' : 'press L', sx, sy - 26, 12, '#e8d9b0', 'center'); }
+    }
+    if (this.barrierX != null && this.onScreen(this.barrierX, 200)) {
+      for (let z = STREET.zMin + 10; z <= STREET.zMax; z += 50) {
+        const [bx, by] = this.toScreen(this.barrierX + 30 + (z % 100 ? 10 : 0), z, 0), s = this.depthScale(z);
+        c.fillStyle = 'rgba(0,0,0,.35)'; c.beginPath(); c.ellipse(bx, by, 60 * s, 8 * s, 0, 0, 7); c.fill();
+        c.fillStyle = '#222'; c.fillRect(bx - 50 * s, by - 46 * s, 6 * s, 46 * s); c.fillRect(bx + 44 * s, by - 46 * s, 6 * s, 46 * s);
+        for (let k = 0; k < 8; k++) { c.fillStyle = k % 2 ? '#f2f2ee' : '#d23a2a'; c.fillRect(bx - 56 * s + k * 14 * s, by - 52 * s, 14 * s, 14 * s); }
+      }
+      const [bx, by] = this.toScreen(this.barrierX + 60, STREET.zMin, 0);
+      c.fillStyle = '#e8e2d0'; c.fillRect(bx - 70, by - 150, 140, 40); c.fillStyle = '#d23a2a'; c.fillRect(bx - 66, by - 146, 132, 32); txt(c, 'ROAD CLOSED', bx, by - 124, 16, '#fff', 'center'); c.fillStyle = '#222'; c.fillRect(bx - 3, by - 110, 6, 64);
     }
   }
   drawWarn(c, g) {
@@ -708,6 +755,476 @@ class Car {
     if (this.state !== 'burn') { c.save(); c.globalCompositeOperation = 'lighter'; const hx = sx + this.dir * this.w * 0.48 * s, hy = sy - this.h * 0.32 * s; const gr = c.createRadialGradient(hx, hy, 4, hx + this.dir * 160, hy, 200); gr.addColorStop(0, 'rgba(255,240,190,.35)'); gr.addColorStop(1, 'rgba(255,240,190,0)'); c.fillStyle = gr; c.beginPath(); c.moveTo(hx, hy); c.lineTo(hx + this.dir * 340, hy - 60); c.lineTo(hx + this.dir * 340, hy + 70); c.fill(); c.restore(); }
   }
 }
+
+// ============================================================
+//  ROOFTOPS — a grapple-and-swing section in the middle of each level.
+//  Pads (rooftops / container stacks / catwalks) at different heights,
+//  separated by gaps you jump or swing across. Elevation is folded into
+//  the z (lane) coordinate, so toScreen() stays x-camX, z-h everywhere.
+// ============================================================
+const ROOF = { z0: 548, z1: 624, HAND: 138, ENTRY_X: 3000, BARRIER_X: 3330, RETURN_X: 3560 };
+
+const ROOF_THEMES = {
+  1:  { style: 'brick', title: 'THE ROOFTOPS', wall: '#6e3526', mortar: '#2b1711', top: '#2b2a2e', lip: '#8d7c6b', win: '#ffcf7a', accent: '#ffb35a', anchor: 'crane', outdoor: true, props: ['tower', 'ac', 'bulk', 'chimney', 'antenna', 'billboard', 'ac'] },
+  2:  { style: 'catwalk', title: 'THE GIRDERS', top: '#2a3034', lip: '#d8b13a', steel: '#3c4a52', accent: '#7fd6e8', pit: '#2e6a8a', anchor: 'chain', outdoor: false, props: ['lamp', 'panel', 'crates', 'pipes'] },
+  3:  { style: 'tin', title: 'SCRAPYARD ROOFS', wall: '#5d4a38', top: '#3a3430', lip: '#9a8a70', win: '#ffd08a', accent: '#ffb347', anchor: 'crane', outdoor: true, props: ['ac', 'chimney', 'billboard', 'antenna', 'tower'] },
+  4:  { style: 'catwalk', title: 'THE PIPE RUNS', top: '#26302a', lip: '#c9b23a', steel: '#3a4a3c', accent: '#8dff6a', pit: '#4dff3a', anchor: 'chain', outdoor: false, props: ['pipes', 'lamp', 'panel', 'barrels'] },
+  5:  { style: 'container', title: 'CONTAINER STACKS', top: '#2c3136', lip: '#7d8790', accent: '#ffc46b', anchor: 'crane', outdoor: true, props: ['lamppost', 'crates', 'lamppost'] },
+  6:  { style: 'catwalk', title: 'THE RAFTERS', top: '#2a3038', lip: '#d0b23a', steel: '#3d4a5c', accent: '#a8dcff', pit: '#6ab8ff', anchor: 'chain', outdoor: false, props: ['lamp', 'crates', 'panel', 'pipes'] },
+  7:  { style: 'catwalk', title: 'THE CATWALKS', top: '#2b2a34', lip: '#d0b23a', steel: '#463c56', accent: '#c58aff', pit: '#7dff6a', anchor: 'chain', outdoor: false, props: ['barrels', 'pipes', 'lamp', 'panel'] },
+  8:  { style: 'concrete', title: 'THE BROKEN DECK', wall: '#5a5a5e', top: '#2e2e33', lip: '#8a8a8e', accent: '#ffd36b', anchor: 'wire', outdoor: true, props: ['lamppost', 'sign', 'lamppost', 'barrier'] },
+  9:  { style: 'brick', title: 'HIGH-RISE HOP', wall: '#3d3448', mortar: '#1c1724', top: '#25242c', lip: '#7a7488', win: '#9fe6ff', accent: '#ff5fa8', anchor: 'wire', outdoor: true, props: ['neon', 'tower', 'ac', 'antenna', 'dish', 'neon', 'bulk'] },
+  10: { style: 'glass', title: 'TOWER CROWN', wall: '#1b2636', top: '#2a2a30', lip: '#c9a24a', win: '#ffe3a0', accent: '#ffd36b', anchor: 'crane', outdoor: true, skyFrom: 9, props: ['antenna', 'bulk', 'dish', 'billboard', 'ac'] },
+};
+const ADS = ['ACORN COLA', 'NUTTY BUDDY', 'EAST END 88.1 FM', 'BIG CHEESE PIZZA', 'SQUEAKY CLEAN', 'PIGEON EXPRESS'];
+
+// ---------------- procedural art helpers ----------------
+const RoofArt = {
+  hex(c, a) { const n = parseInt(c.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; },
+  jitter(hex, r, amt) { const n = parseInt(hex.slice(1), 16); const k = (r() - 0.5) * amt; const f = v => clamp(Math.round(v * (1 + k)), 0, 255); return `rgb(${f(n >> 16)},${f((n >> 8) & 255)},${f(n & 255)})`; },
+  // brick wall with windows
+  brick(x, T, w, y0, h, r) {
+    x.fillStyle = T.mortar; x.fillRect(0, y0, w, h);
+    for (let yy = y0, row = 0; yy < y0 + h; yy += 9, row++) for (let xx = (row % 2) * -10; xx < w; xx += 20) { x.fillStyle = this.jitter(T.wall, r, 0.35); x.fillRect(xx + 1, yy + 1, 18, 7); }
+    // cornice
+    x.fillStyle = shade(T.wall, -0.55); x.fillRect(0, y0, w, 16); x.fillStyle = shade(T.wall, -0.3); for (let xx = 4; xx < w; xx += 14) x.fillRect(xx, y0 + 16, 7, 6);
+    this.windows(x, T, w, y0 + 40, h, r, 92, 86, 34, 50);
+  },
+  windows(x, T, w, y0, h, r, sx, sy, ww, wh) {
+    const off = 30 + r() * 30;
+    for (let yy = y0; yy < y0 + h - 30; yy += sy) for (let xx = off; xx < w - ww - 10; xx += sx) {
+      const lit = r() < 0.32;
+      x.fillStyle = 'rgba(0,0,0,.55)'; x.fillRect(xx - 3, yy - 3, ww + 6, wh + 8);
+      if (lit) { const g = x.createLinearGradient(0, yy, 0, yy + wh); g.addColorStop(0, T.win); g.addColorStop(1, shade(T.win, -0.45)); x.fillStyle = g; }
+      else x.fillStyle = r() < 0.5 ? '#141820' : '#1d2430';
+      x.fillRect(xx, yy, ww, wh);
+      x.fillStyle = 'rgba(0,0,0,.6)'; x.fillRect(xx + ww / 2 - 1, yy, 2, wh); x.fillRect(xx, yy + wh * 0.45, ww, 2);
+      if (lit && r() < 0.5) { x.fillStyle = 'rgba(0,0,0,.45)'; x.fillRect(xx + ww * 0.55, yy + 4, ww * 0.35, wh - 8); }
+      x.fillStyle = shade(T.lip, -0.2); x.fillRect(xx - 4, yy + wh + 2, ww + 8, 4);
+      if (!lit && r() < 0.12) { x.fillStyle = '#8b9096'; x.fillRect(xx + 4, yy + wh - 14, ww - 8, 14); x.fillStyle = '#5a5e64'; for (let k = 0; k < 4; k++) x.fillRect(xx + 6, yy + wh - 12 + k * 3, ww - 12, 1); }
+    }
+  },
+  tin(x, T, w, y0, h, r) {
+    for (let xx = 0; xx < w; xx += 6) { x.fillStyle = (xx / 6) % 2 ? shade(T.wall, -0.15) : shade(T.wall, 0.08); x.fillRect(xx, y0, 6, h); }
+    for (let i = 0; i < w / 60; i++) { x.fillStyle = `rgba(${120 + r() * 40},${60 + r() * 20},20,${0.15 + r() * 0.25})`; x.beginPath(); x.ellipse(r() * w, y0 + r() * h, 20 + r() * 50, 10 + r() * 40, 0, 0, 7); x.fill(); }
+    x.fillStyle = shade(T.wall, -0.5); x.fillRect(0, y0, w, 12);
+    this.windows(x, T, w, y0 + 50, Math.min(h, 160), r, 140, 90, 50, 30);
+    // big sliding door
+    const dx = 60 + r() * (w - 260); x.fillStyle = shade(T.wall, -0.35); x.fillRect(dx, y0 + 70, 150, h); x.strokeStyle = 'rgba(0,0,0,.4)'; x.lineWidth = 2; for (let k = 0; k < 6; k++) { x.beginPath(); x.moveTo(dx, y0 + 70 + k * 26); x.lineTo(dx + 150, y0 + 70 + k * 26); x.stroke(); }
+  },
+  container(x, T, w, y0, h, r) {
+    const cols = ['#7a2b22', '#2b4a6a', '#3c6a3a', '#8a6a2a', '#5a5a62', '#6a3a6a', '#2a6a6a'];
+    for (let yy = y0, row = 0; yy < y0 + h; yy += 104, row++) {
+      for (let xx = -((row * 97) % 180); xx < w; ) {
+        const cw = 220 + Math.floor(r() * 3) * 40, col = cols[Math.floor(r() * cols.length)];
+        x.fillStyle = col; x.fillRect(xx + 2, yy + 2, cw - 4, 100);
+        for (let k = 8; k < cw - 8; k += 8) { x.fillStyle = (k / 8) % 2 ? shade(col, -0.18) : shade(col, 0.1); x.fillRect(xx + k, yy + 8, 4, 88); }
+        x.fillStyle = shade(col, -0.45); x.fillRect(xx + 2, yy + 2, cw - 4, 7); x.fillRect(xx + 2, yy + 94, cw - 4, 8); x.fillRect(xx + 2, yy + 2, 6, 100); x.fillRect(xx + cw - 8, yy + 2, 6, 100);
+        x.fillStyle = 'rgba(230,230,220,.55)'; x.font = 'bold 13px monospace'; x.fillText('EEC ' + (1000 + Math.floor(r() * 8999)), xx + 18, yy + 30);
+        if (r() < 0.5) { x.fillStyle = 'rgba(0,0,0,.35)'; for (let k = 0; k < 4; k++) x.fillRect(xx + cw - 70 + k * 14, yy + 14, 3, 78); }
+        xx += cw;
+      }
+    }
+  },
+  concrete(x, T, w, y0, h, r) {
+    // deck slab + girders + pillars disappearing into the dark
+    x.fillStyle = shade(T.wall, -0.15); x.fillRect(0, y0, w, 46);
+    x.fillStyle = shade(T.wall, 0.15); x.fillRect(0, y0, w, 4);
+    for (let i = 0; i < w / 50; i++) { x.fillStyle = `rgba(0,0,0,${0.08 + r() * 0.15})`; x.fillRect(r() * w, y0 + r() * 40, 20 + r() * 60, 2 + r() * 4); }
+    const g = x.createLinearGradient(0, y0 + 46, 0, y0 + h); g.addColorStop(0, '#16171b'); g.addColorStop(1, '#07080b'); x.fillStyle = g; x.fillRect(0, y0 + 46, w, h);
+    for (let xx = 40 + r() * 80; xx < w - 60; xx += 240 + r() * 80) { const pg = x.createLinearGradient(xx, 0, xx + 54, 0); pg.addColorStop(0, shade(T.wall, -0.5)); pg.addColorStop(0.4, shade(T.wall, -0.2)); pg.addColorStop(1, shade(T.wall, -0.6)); x.fillStyle = pg; x.fillRect(xx, y0 + 46, 54, h); }
+    for (let xx = 0; xx < w; xx += 36) { x.fillStyle = 'rgba(0,0,0,.35)'; x.fillRect(xx, y0 + 46, 18, 20); }
+    // stripe
+    x.fillStyle = '#c9a227'; for (let xx = 0; xx < w; xx += 40) x.fillRect(xx, y0 + 30, 20, 5);
+  },
+  glass(x, T, w, y0, h, r) {
+    x.fillStyle = T.wall; x.fillRect(0, y0, w, h);
+    for (let yy = y0 + 20; yy < y0 + h; yy += 64) for (let xx = 0; xx < w; xx += 44) {
+      const lit = r() < 0.18; const g = x.createLinearGradient(xx, yy, xx + 44, yy + 60);
+      g.addColorStop(0, lit ? shade(T.win, -0.1) : '#22344c'); g.addColorStop(1, lit ? shade(T.win, -0.55) : '#0e1622'); x.fillStyle = g; x.fillRect(xx + 2, yy + 2, 40, 58);
+    }
+    x.fillStyle = 'rgba(255,255,255,.07)'; for (let i = 0; i < w / 200; i++) { const xx = r() * w; x.beginPath(); x.moveTo(xx, y0); x.lineTo(xx + 60, y0); x.lineTo(xx - 140, y0 + h); x.lineTo(xx - 200, y0 + h); x.fill(); }
+    x.fillStyle = T.lip; x.fillRect(0, y0, w, 8); for (let xx = 0; xx < w; xx += 44) x.fillRect(xx, y0, 2, h);
+  },
+  catwalk(x, T, w, y0, h, r) {
+    // truss under the walkway, fading into the pit
+    const s = T.steel;
+    x.fillStyle = shade(s, -0.35); x.fillRect(0, y0, w, 14); x.fillRect(0, y0 + 96, w, 12);
+    x.strokeStyle = shade(s, -0.2); x.lineWidth = 6;
+    for (let xx = 0; xx < w; xx += 88) { x.beginPath(); x.moveTo(xx, y0 + 14); x.lineTo(xx + 88, y0 + 96); x.moveTo(xx + 88, y0 + 14); x.lineTo(xx, y0 + 96); x.stroke(); }
+    x.fillStyle = shade(s, 0.1); x.fillRect(0, y0, w, 3);
+    // columns at the ends
+    for (const cx of [26, w - 52]) { const g = x.createLinearGradient(0, y0, 0, y0 + h); g.addColorStop(0, shade(s, -0.1)); g.addColorStop(1, 'rgba(0,0,0,0)'); x.fillStyle = g; x.fillRect(cx, y0 + 100, 26, h); }
+    // hanging cables
+    x.strokeStyle = 'rgba(0,0,0,.6)'; x.lineWidth = 2; for (let i = 0; i < w / 160; i++) { const cx = r() * w; x.beginPath(); x.moveTo(cx, y0 + 108); x.quadraticCurveTo(cx + 30, y0 + 180, cx + 10 + r() * 50, y0 + 230 + r() * 80); x.stroke(); }
+  },
+  // the walkable top surface (depth band) + front lip
+  surface(x, T, w, yb, yf, r, rain) {
+    const st = T.style;
+    if (st === 'catwalk') {
+      x.fillStyle = shade(T.top, -0.3); x.fillRect(0, yb, w, yf - yb);
+      x.strokeStyle = shade(T.top, 0.35); x.lineWidth = 1;
+      for (let xx = -60; xx < w + 60; xx += 9) { x.beginPath(); x.moveTo(xx, yb); x.lineTo(xx + 24, yf); x.stroke(); }
+      for (let yy = yb; yy < yf; yy += 8) { x.fillStyle = 'rgba(0,0,0,.35)'; x.fillRect(0, yy, w, 2); }
+      // back handrail
+      x.fillStyle = shade(T.steel, 0.15); x.fillRect(0, yb - 44, w, 5); x.fillRect(0, yb - 22, w, 3);
+      for (let xx = 10; xx < w; xx += 70) x.fillRect(xx, yb - 44, 5, 46);
+      // hazard lip
+      x.fillStyle = '#111'; x.fillRect(0, yf, w, 12); x.fillStyle = T.lip; for (let xx = -12; xx < w; xx += 24) { x.beginPath(); x.moveTo(xx, yf + 12); x.lineTo(xx + 12, yf); x.lineTo(xx + 22, yf); x.lineTo(xx + 10, yf + 12); x.fill(); }
+      return;
+    }
+    const top = st === 'glass' ? '#3a3a42' : T.top;
+    const g = x.createLinearGradient(0, yb, 0, yf); g.addColorStop(0, shade(top, -0.25)); g.addColorStop(1, shade(top, 0.12)); x.fillStyle = g; x.fillRect(0, yb, w, yf - yb);
+    if (st === 'glass') { x.strokeStyle = 'rgba(255,255,255,.08)'; for (let xx = 0; xx < w; xx += 64) { x.beginPath(); x.moveTo(xx, yb); x.lineTo(xx + 10, yf); x.stroke(); } for (let yy = yb; yy < yf; yy += 20) { x.beginPath(); x.moveTo(0, yy); x.lineTo(w, yy); x.stroke(); } }
+    else if (st === 'container') { x.strokeStyle = 'rgba(0,0,0,.35)'; x.lineWidth = 2; for (let yy = yb + 6; yy < yf; yy += 7) { x.beginPath(); x.moveTo(0, yy); x.lineTo(w, yy); x.stroke(); } for (let xx = 0; xx < w; xx += 260) { x.fillStyle = 'rgba(0,0,0,.5)'; x.fillRect(xx, yb, 4, yf - yb); } }
+    else if (st === 'concrete') { x.fillStyle = '#d8b13a'; for (let xx = 20; xx < w; xx += 120) x.fillRect(xx, (yb + yf) / 2, 60, 3); x.strokeStyle = 'rgba(0,0,0,.5)'; x.lineWidth = 1.5; for (let i = 0; i < w / 120; i++) { let cx = r() * w, cy = yb + r() * (yf - yb); x.beginPath(); x.moveTo(cx, cy); for (let k = 0; k < 4; k++) { cx += 10 + r() * 20; cy += (r() - 0.5) * 12; x.lineTo(cx, cy); } x.stroke(); } }
+    else { for (let i = 0; i < w * 0.9; i++) { x.fillStyle = r() < 0.5 ? 'rgba(255,255,255,.05)' : 'rgba(0,0,0,.18)'; x.fillRect(r() * w, yb + r() * (yf - yb), 2, 2); } x.fillStyle = 'rgba(0,0,0,.25)'; for (let xx = 80 + r() * 100; xx < w; xx += 160 + r() * 140) x.fillRect(xx, yb, 2, yf - yb); }
+    if (rain && st !== 'glass') for (let i = 0; i < w / 220; i++) { x.fillStyle = 'rgba(160,180,220,.12)'; x.beginPath(); x.ellipse(r() * w, yb + 10 + r() * (yf - yb - 16), 30 + r() * 50, 4 + r() * 4, 0, 0, 7); x.fill(); }
+    // back parapet
+    x.fillStyle = shade(T.lip, -0.35); x.fillRect(0, yb - 12, w, 12); x.fillStyle = shade(T.lip, -0.1); x.fillRect(0, yb - 12, w, 3);
+    // front coping
+    x.fillStyle = T.lip; x.fillRect(0, yf, w, 13); x.fillStyle = shade(T.lip, 0.25); x.fillRect(0, yf, w, 3);
+    x.fillStyle = shade(T.lip, -0.3); for (let xx = 0; xx < w; xx += 32) x.fillRect(xx, yf + 3, 1, 10);
+    const sg = x.createLinearGradient(0, yf + 13, 0, yf + 30); sg.addColorStop(0, 'rgba(0,0,0,.55)'); sg.addColorStop(1, 'rgba(0,0,0,0)'); x.fillStyle = sg; x.fillRect(0, yf + 13, w, 17);
+  },
+  // things standing at the back edge of a pad (baseline y = yb)
+  prop(x, kind, px, yb, T, r) {
+    const steel = '#3a3e44', dark = '#1a1c20';
+    if (kind === 'tower') { // classic wooden water tower — also a grapple perch
+      x.fillStyle = dark; for (const lx of [-40, -14, 14, 40]) x.fillRect(px + lx - 3, yb - 74, 6, 74);
+      x.strokeStyle = dark; x.lineWidth = 3; x.beginPath(); x.moveTo(px - 40, yb - 70); x.lineTo(px + 40, yb - 10); x.moveTo(px + 40, yb - 70); x.lineTo(px - 40, yb - 10); x.stroke();
+      x.fillStyle = '#2a1e16'; x.fillRect(px - 52, yb - 80, 104, 8);
+      const g = x.createLinearGradient(px - 48, 0, px + 48, 0); g.addColorStop(0, '#3b2a1e'); g.addColorStop(0.45, '#6b4c34'); g.addColorStop(1, '#2a1d14'); x.fillStyle = g; x.fillRect(px - 48, yb - 186, 96, 108);
+      x.fillStyle = 'rgba(0,0,0,.3)'; for (let k = -44; k < 48; k += 8) x.fillRect(px + k, yb - 186, 1, 108);
+      x.fillStyle = '#1e1e22'; for (const by of [-170, -132, -96]) x.fillRect(px - 50, yb + by, 100, 4);
+      x.fillStyle = '#2b2622'; x.beginPath(); x.moveTo(px - 54, yb - 186); x.lineTo(px, yb - 226); x.lineTo(px + 54, yb - 186); x.fill(); x.fillStyle = '#4a4038'; x.beginPath(); x.moveTo(px - 54, yb - 186); x.lineTo(px, yb - 226); x.lineTo(px - 10, yb - 186); x.fill();
+      return { perch: { dx: 0, top: 230 } };
+    }
+    if (kind === 'ac') { const w = 74, h = 46; x.fillStyle = '#6a6e74'; x.fillRect(px - w / 2, yb - h, w, h); x.fillStyle = '#4a4e54'; x.fillRect(px - w / 2, yb - h, w, 6); x.fillStyle = '#2a2c30'; x.beginPath(); x.arc(px - 10, yb - h / 2 + 2, 15, 0, 7); x.fill(); x.strokeStyle = '#555'; x.lineWidth = 1; for (let k = 0; k < 4; k++) { x.beginPath(); x.arc(px - 10, yb - h / 2 + 2, 4 + k * 3.5, 0, 7); x.stroke(); } for (let k = 0; k < 5; k++) { x.fillStyle = '#3a3c40'; x.fillRect(px + 12, yb - h + 12 + k * 6, 20, 2); } return; }
+    if (kind === 'bulk') { x.fillStyle = shade(T.wall || '#555a60', -0.2); x.fillRect(px - 58, yb - 96, 116, 96); x.fillStyle = shade(T.lip || '#777', -0.3); x.fillRect(px - 62, yb - 102, 124, 10); x.fillStyle = '#16181c'; x.fillRect(px - 18, yb - 70, 36, 70); x.fillStyle = '#ffd38a'; x.fillRect(px - 5, yb - 86, 10, 6); const gl = x.createRadialGradient(px, yb - 83, 2, px, yb - 70, 60); gl.addColorStop(0, 'rgba(255,210,140,.35)'); gl.addColorStop(1, 'rgba(255,210,140,0)'); x.fillStyle = gl; x.fillRect(px - 60, yb - 140, 120, 140); return; }
+    if (kind === 'chimney') { x.fillStyle = shade(T.wall || '#6a3a2a', -0.1); x.fillRect(px - 14, yb - 92, 28, 92); x.fillStyle = shade(T.wall || '#6a3a2a', -0.45); x.fillRect(px - 18, yb - 98, 36, 8); x.fillStyle = 'rgba(0,0,0,.25)'; for (let yy = yb - 90; yy < yb; yy += 9) x.fillRect(px - 14, yy, 28, 1); return; }
+    if (kind === 'antenna') { x.fillStyle = dark; x.fillRect(px - 2, yb - 170, 4, 170); for (let k = 0; k < 4; k++) x.fillRect(px - 16 + k * 3, yb - 160 + k * 30, 32 - k * 6, 3); x.fillStyle = '#ff3b3b'; x.beginPath(); x.arc(px, yb - 172, 4, 0, 7); x.fill(); return { blink: { dx: 0, dy: 172 } }; }
+    if (kind === 'dish') { x.fillStyle = dark; x.fillRect(px - 3, yb - 40, 6, 40); x.fillStyle = '#8a9096'; x.beginPath(); x.ellipse(px, yb - 54, 26, 34, -0.5, 0, 7); x.fill(); x.fillStyle = '#5a6066'; x.beginPath(); x.ellipse(px + 4, yb - 52, 18, 26, -0.5, 0, 7); x.fill(); return; }
+    if (kind === 'billboard') {
+      const bw = 270, bh = 110, by = yb - 200; x.fillStyle = dark; for (const lx of [-90, 90]) x.fillRect(px + lx - 4, by + bh, 8, yb - by - bh); x.fillRect(px - 120, by + bh + 30, 240, 4);
+      x.fillStyle = '#0f1116'; x.fillRect(px - bw / 2 - 6, by - 6, bw + 12, bh + 12);
+      const ad = ADS[Math.floor(r() * ADS.length)], hue = Math.floor(r() * 360);
+      const g = x.createLinearGradient(0, by, 0, by + bh); g.addColorStop(0, `hsl(${hue},45%,38%)`); g.addColorStop(1, `hsl(${hue},45%,18%)`); x.fillStyle = g; x.fillRect(px - bw / 2, by, bw, bh);
+      x.fillStyle = `hsl(${(hue + 180) % 360},70%,70%)`; x.beginPath(); x.arc(px - bw / 2 + 50, by + bh / 2, 30, 0, 7); x.fill();
+      x.fillStyle = '#f4ead2'; x.font = 'bold 26px Impact, "Arial Black", sans-serif'; x.textAlign = 'center'; x.fillText(ad, px + 30, by + bh / 2 + 10); x.textAlign = 'left';
+      x.fillStyle = 'rgba(0,0,0,.3)'; x.fillRect(px - bw / 2, by + bh - 20, bw, 20);
+      for (const lx of [-80, 0, 80]) { x.fillStyle = '#222'; x.fillRect(px + lx - 2, by - 22, 4, 16); const gl = x.createRadialGradient(px + lx, by - 4, 2, px + lx, by + 30, 70); gl.addColorStop(0, 'rgba(255,240,200,.35)'); gl.addColorStop(1, 'rgba(255,240,200,0)'); x.fillStyle = gl; x.fillRect(px + lx - 70, by - 10, 140, 110); }
+      return;
+    }
+    if (kind === 'neon') {
+      const words = ['HOTEL', 'BAR', 'OPEN 24', 'NOODLES', 'DINER'], word = words[Math.floor(r() * words.length)], col = pick(['#ff5fa8', '#5ff0ff', '#ffd35f', '#9dff6a']);
+      x.fillStyle = dark; x.fillRect(px - 4, yb - 150, 8, 150); x.fillRect(px - 80, yb - 150, 160, 6);
+      x.font = 'bold 40px "Arial Black", Impact, sans-serif'; x.textAlign = 'center';
+      x.save(); x.shadowColor = col; x.shadowBlur = 24; x.fillStyle = col; x.fillText(word, px, yb - 160); x.shadowBlur = 8; x.fillStyle = '#fff'; x.globalAlpha = 0.6; x.fillText(word, px, yb - 160); x.restore(); x.textAlign = 'left';
+      return;
+    }
+    if (kind === 'lamppost') { x.fillStyle = dark; x.fillRect(px - 3, yb - 190, 6, 190); x.fillRect(px - 3, yb - 190, 34, 5); x.fillStyle = '#ffe2a0'; x.fillRect(px + 22, yb - 186, 16, 6); const gl = x.createRadialGradient(px + 30, yb - 180, 2, px + 30, yb - 120, 130); gl.addColorStop(0, 'rgba(255,220,150,.32)'); gl.addColorStop(1, 'rgba(255,220,150,0)'); x.fillStyle = gl; x.fillRect(px - 110, yb - 200, 280, 200); return; }
+    if (kind === 'sign') { x.fillStyle = dark; x.fillRect(px - 70, yb - 120, 6, 120); x.fillRect(px + 64, yb - 120, 6, 120); x.fillStyle = '#1f5a34'; x.fillRect(px - 90, yb - 170, 180, 60); x.strokeStyle = '#e8e8e0'; x.lineWidth = 2; x.strokeRect(px - 86, yb - 166, 172, 52); x.fillStyle = '#e8e8e0'; x.font = 'bold 18px Arial, sans-serif'; x.textAlign = 'center'; x.fillText('EXIT 12  ▲', px, yb - 133); x.textAlign = 'left'; return; }
+    if (kind === 'barrier') { x.fillStyle = '#8a8a86'; x.beginPath(); x.moveTo(px - 60, yb); x.lineTo(px - 50, yb - 40); x.lineTo(px + 50, yb - 40); x.lineTo(px + 60, yb); x.fill(); x.fillStyle = '#c9a227'; x.fillRect(px - 50, yb - 30, 100, 5); return; }
+    if (kind === 'lamp') { x.fillStyle = dark; x.fillRect(px - 1, yb - 260, 2, 120); x.fillStyle = '#2a2c30'; x.beginPath(); x.moveTo(px - 22, yb - 132); x.lineTo(px + 22, yb - 132); x.lineTo(px + 12, yb - 144); x.lineTo(px - 12, yb - 144); x.fill(); const gl = x.createRadialGradient(px, yb - 130, 3, px, yb - 60, 140); gl.addColorStop(0, RoofArt.hex(T.accent, 0.45)); gl.addColorStop(1, RoofArt.hex(T.accent, 0)); x.fillStyle = gl; x.beginPath(); x.moveTo(px - 18, yb - 132); x.lineTo(px + 18, yb - 132); x.lineTo(px + 110, yb); x.lineTo(px - 110, yb); x.fill(); return; }
+    if (kind === 'panel') { x.fillStyle = '#3a4048'; x.fillRect(px - 30, yb - 80, 60, 80); x.fillStyle = '#22262c'; x.fillRect(px - 24, yb - 72, 48, 30); for (let k = 0; k < 4; k++) { x.fillStyle = pick(['#ff4040', '#40ff70', '#ffd040']); x.fillRect(px - 20 + k * 11, yb - 34, 5, 5); } return { blink: { dx: -20, dy: 34 } }; }
+    if (kind === 'crates') { for (const [ox, oy, s] of [[-40, 0, 60], [24, 0, 54], [-10, -60, 52]]) { x.fillStyle = '#6b4a2b'; x.fillRect(px + ox - s / 2, yb + oy - s, s, s); x.strokeStyle = '#3d2b1a'; x.lineWidth = 3; x.strokeRect(px + ox - s / 2 + 2, yb + oy - s + 2, s - 4, s - 4); x.beginPath(); x.moveTo(px + ox - s / 2, yb + oy - s); x.lineTo(px + ox + s / 2, yb + oy); x.stroke(); } return; }
+    if (kind === 'barrels') { for (const ox of [-34, 0, 34]) { const col = pick(['#2a5a2a', '#6a2a2a', '#2a3a6a', '#7a6a20']); x.fillStyle = col; x.fillRect(px + ox - 15, yb - 50, 30, 50); x.fillStyle = shade(col, -0.4); x.fillRect(px + ox - 15, yb - 40, 30, 3); x.fillRect(px + ox - 15, yb - 16, 30, 3); x.fillStyle = shade(col, 0.3); x.fillRect(px + ox - 11, yb - 50, 4, 50); } return; }
+    if (kind === 'pipes') { for (let k = 0; k < 3; k++) { const yy = yb - 30 - k * 26, col = shade(T.steel || '#445', 0.1 * k); x.fillStyle = col; x.fillRect(px - 160, yy, 320, 16); x.fillStyle = 'rgba(255,255,255,.1)'; x.fillRect(px - 160, yy + 2, 320, 3); x.fillStyle = shade(col, -0.4); for (let xx = -150; xx < 160; xx += 80) x.fillRect(px + xx, yy - 3, 8, 22); } x.fillStyle = '#b02a2a'; x.beginPath(); x.arc(px + 40, yb - 64, 9, 0, 7); x.fill(); return; }
+  },
+};
+
+// ---------------- Stage extension ----------------
+Object.assign(Stage.prototype, {
+  roofTheme() { return ROOF_THEMES[this.L.n] || ROOF_THEMES[1]; },
+  // lay out the rooftop course for this level
+  buildRoof() {
+    const L = this.L, n = L.n, r = mulberry(n * 7919 + 13), T = this.roofTheme();
+    const pads = [], anchors = [], groups = [], acorns = [], props = [], vents = [];
+    let x = 220, elev = 30;
+    const pad = (w, e, extra = {}) => { const P = Object.assign({ x0: x, x1: x + w, elev: e, id: pads.length }, extra); pads.push(P); x += w; elev = e; return P; };
+    const nextElev = (maxD) => clamp(elev + Math.round((r() * 2 - 1) * maxD / 10) * 10, 0, 110);
+    const jumpGap = () => { x += 130 + Math.floor(r() * 50); };
+    const swingGap = (double) => {
+      const gw = double ? 600 + r() * 80 : 330 + r() * 70, gx0 = x, A = pads[pads.length - 1];
+      const xs = double ? [gx0 + gw * 0.27, gx0 + gw * 0.74] : [gx0 + gw * 0.5];
+      xs.forEach((ax, i) => anchors.push({ x: ax, jit: (r() - 0.5) * 24, kind: 'swing', style: T.anchor, gap: [gx0, gx0 + gw] }));
+      x += gw;
+    };
+    const fight = (w, size, e) => { const P = pad(w, e, { fight: true }); groups.push({ pad: P, size, done: false }); return P; };
+    const big = 2 + Math.floor(n / 3);
+    // ---- the course ----
+    pad(880, 30, { start: true });
+    swingGap(false);
+    fight(1000, big, nextElev(60));
+    jumpGap();
+    pad(620 + r() * 120, nextElev(60), { crate: true });
+    swingGap(n >= 3);
+    fight(1080, big + 1, nextElev(70));
+    if (n >= 5) { swingGap(n >= 7); fight(900, big, nextElev(60)); }
+    jumpGap();
+    const last = pad(760, nextElev(50), { last: true });
+    this.roofExitX = last.x1;
+    this.roofLen = last.x1 + 520;
+    this.pads = pads; this.roofAnchors = anchors; this.roofGroups = groups;
+    // anchor heights: keep the bottom of the swing clear of both neighbouring roofs
+    for (const a of anchors) {
+      const A = this.padAt(a.gap[0] - 4), B = this.padAt(a.gap[1] + 4), hi = Math.max(A ? A.elev : 0, B ? B.elev : 0);
+      const zh = (ROOF.z0 + ROOF.z1) / 2 - hi;
+      a.sy = Math.max(72, zh - 48 - ROOF.HAND - 240 + a.jit);
+      a.z = (ROOF.z0 + ROOF.z1) / 2 - (A ? A.elev : 0); a.h = a.z - a.sy;
+      a.maxR = zh - 48 - ROOF.HAND - a.sy;
+      // acorn arc along the swing path (hero's body centre hangs ~70px below the hand)
+      const R = clamp(a.maxR, 150, 300);
+      for (let k = -2; k <= 2; k++) { const th = k * 0.32; acorns.push({ x: a.x + R * Math.sin(th), sy: a.sy + R * Math.cos(th) + 70, z: a.z }); }
+    }
+    // props on the walkable band: crates (one golden), trash cans, and some vents
+    for (const P of pads) {
+      const zc = ROOF.z0 - P.elev;
+      if (P.crate || r() < 0.5) props.push(this.mkRoofProp('crate', P.x0 + 140 + r() * (P.x1 - P.x0 - 280), zc + 20 + r() * 40, { golden: !!P.crate }));
+      if (r() < 0.55) props.push(this.mkRoofProp('trashcan', P.x0 + 120 + r() * (P.x1 - P.x0 - 240), zc + 30 + r() * 40));
+      if (T.outdoor && r() < 0.5) vents.push({ x: P.x0 + 200 + r() * (P.x1 - P.x0 - 400), z: zc + 40, t: r() * 100 });
+    }
+    // lookouts: a thug waiting on the far side of a gap — yank him off before you cross
+    const ranged = L.pool.filter(k => ['thrower', 'sniper'].includes(KINDS[k].ai));
+    this.roofLookouts = [];
+    pads.forEach((P, i) => { if (i >= 2 && !P.last && r() < (n >= 2 ? 0.75 : 0.5)) this.roofLookouts.push({ pad: P, x: P.x0 + 120, kind: ranged.length && r() < 0.7 ? ranged[Math.floor(r() * ranged.length)] : L.pool[Math.floor(r() * L.pool.length)], done: false }); });
+    this.roofProps = props; this.roofVents = vents;
+    this.roofAcorns = acorns;
+    this.buildRoofArt(r);
+  },
+  mkRoofProp(kind, x, z, opt = {}) { const p = this.mkArenaProp(kind, x, z); return Object.assign(p, opt); },
+  padAt(x) { for (const P of this.pads || []) if (x >= P.x0 && x <= P.x1) return P; return null; },
+  nearestPad(x) { let b = null, bd = 1e9; for (const P of this.pads) { const d = x < P.x0 ? P.x0 - x : x > P.x1 ? x - P.x1 : 0; if (d < bd) { bd = d; b = P; } } return b; },
+  band(P) { return [ROOF.z0 - P.elev, ROOF.z1 - P.elev]; },
+  // pre-render every pad (building top + facade + back props) and the mid-distance skyline
+  buildRoofArt(r) {
+    const T = this.roofTheme(), rain = this.L.rain > 0;
+    for (const P of this.pads) {
+      const w = Math.ceil(P.x1 - P.x0), yb = ROOF.z0 - P.elev - 22, yf = ROOF.z1 - P.elev + 14, yTop = Math.max(0, yb - 240);
+      const cv = makeCanvas(w, H - yTop), x = cv.getContext('2d'); x.translate(0, -yTop);
+      P.yTop = yTop; P.yb = yb; P.yf = yf; P.blinks = [];
+      // facade
+      const fy = yf + 13, fh = H - fy;
+      if (T.style === 'brick') RoofArt.brick(x, T, w, fy, fh, r);
+      else if (T.style === 'tin') RoofArt.tin(x, T, w, fy, fh, r);
+      else if (T.style === 'container') RoofArt.container(x, T, w, fy, fh, r);
+      else if (T.style === 'concrete') RoofArt.concrete(x, T, w, fy, fh, r);
+      else if (T.style === 'glass') RoofArt.glass(x, T, w, fy, fh, r);
+      else RoofArt.catwalk(x, T, w, fy, fh, r);
+      // back props
+      const slots = Math.max(1, Math.floor(w / 260)); const used = [];
+      for (let i = 0; i < slots; i++) {
+        if (r() < 0.25) continue;
+        const kind = T.props[Math.floor(r() * T.props.length)]; const px = (i + 0.5) * (w / slots) + (r() - 0.5) * 60;
+        if (kind === 'tower' && used.includes('tower')) continue; used.push(kind);
+        const res = RoofArt.prop(x, kind, px, yb + 2, T, r);
+        if (res && res.perch && T.anchor !== 'chain') this.roofPerches.push({ x: P.x0 + px, z: ROOF.z0 - P.elev + 4, h: res.perch.top - 26 + 4, kind: 'perch', pad: P });
+        if (res && res.blink) P.blinks.push({ x: px + res.blink.dx, y: yb + 2 - res.blink.dy });
+      }
+      RoofArt.surface(x, T, w, yb, yf, r, rain);
+      // building corners
+      const lg = x.createLinearGradient(0, 0, 26, 0); lg.addColorStop(0, 'rgba(0,0,0,.55)'); lg.addColorStop(1, 'rgba(0,0,0,0)'); x.fillStyle = lg; x.fillRect(0, yb - 12, 26, H);
+      const rg = x.createLinearGradient(w - 26, 0, w, 0); rg.addColorStop(0, 'rgba(0,0,0,0)'); rg.addColorStop(1, 'rgba(0,0,0,.55)'); x.fillStyle = rg; x.fillRect(w - 26, yb - 12, 26, H);
+      // distance fog toward the bottom
+      const fg = x.createLinearGradient(0, yf + 60, 0, H); fg.addColorStop(0, 'rgba(0,0,0,0)'); fg.addColorStop(1, 'rgba(0,0,0,.6)'); x.fillStyle = fg; x.fillRect(0, yf + 60, w, H - yf - 60);
+      P.img = cv;
+    }
+    // mid-distance silhouettes (outdoor) — a tileable strip of darker buildings with lit windows
+    const mw = 2400, mh = 460, mv = makeCanvas(mw, mh), m = mv.getContext('2d');
+    if (T.outdoor) {
+      const base = this.skyCol;
+      for (let xx = -40; xx < mw; ) {
+        const bw = 90 + r() * 170, bh = 120 + r() * 300, y0 = mh - bh;
+        m.fillStyle = r() < 0.5 ? '#0d0f15' : '#11131a'; m.fillRect(xx, y0, bw, bh);
+        m.fillStyle = 'rgba(255,255,255,.04)'; m.fillRect(xx, y0, 3, bh);
+        for (let wy = y0 + 14; wy < mh - 10; wy += 16) for (let wx = xx + 8; wx < xx + bw - 8; wx += 13) if (r() < 0.16) { m.fillStyle = r() < 0.7 ? RoofArt.hex(T.win || '#ffcf7a', 0.55) : 'rgba(160,200,255,.45)'; m.fillRect(wx, wy, 5, 7); }
+        if (r() < 0.3) { m.fillStyle = '#0b0c10'; m.fillRect(xx + bw * 0.3, y0 - 40, 34, 30); m.beginPath(); m.moveTo(xx + bw * 0.3 - 4, y0 - 40); m.lineTo(xx + bw * 0.3 + 17, y0 - 58); m.lineTo(xx + bw * 0.3 + 38, y0 - 40); m.fill(); m.fillRect(xx + bw * 0.3 + 4, y0 - 10, 3, 10); m.fillRect(xx + bw * 0.3 + 27, y0 - 10, 3, 10); }
+        if (r() < 0.25) { m.fillStyle = '#0b0c10'; m.fillRect(xx + bw * 0.7, y0 - 70, 3, 70); }
+        xx += bw + r() * 20;
+      }
+      const hz = m.createLinearGradient(0, 0, 0, mh); hz.addColorStop(0, 'rgba(0,0,0,0)'); hz.addColorStop(1, 'rgba(0,0,0,.45)'); m.fillStyle = hz; m.fillRect(0, 0, mw, mh);
+    }
+    this.roofMid = mv;
+    this.roofSky = this.L.n === 10 ? Assets.img['px09_0'] : this.layers[0];
+  },
+
+  // ---------------- entering / leaving ----------------
+  enterRoof(g) { this.trans = { t: 0, dur: 30, phase: 'out', to: 'roof', slide: 1 }; Audio2.play('whoosh'); },
+  exitRoof(g) { this.trans = { t: 0, dur: 30, phase: 'out', to: 'street', fromRoof: true, slide: -1 }; Audio2.play('whoosh'); },
+  startRoof(g) {
+    this.mode = 'roof'; this.cars = []; this.warn = null; this.roofLock = null; this.roofPerches = [];
+    if (!this.pads) this.buildRoof();
+    g.clearForArena(); this.roofDone = false;
+    const p = g.hero, P0 = this.pads[0];
+    p.pad = P0; p.overGap = true; p.x = P0.x0 - 70; p.lastX = p.x; p.z = (ROOF.z0 + ROOF.z1) / 2 - P0.elev; p.h = -200; p.vh = 22; p.vx = 5.6; p.noFallT = 50; p.dir = 1; p.vz = 0; p.state = 'free'; p.iframes = 60; p.hook = null; p.swing = null;
+    p.safe = { x: P0.x0 + 200, z: p.z, pad: P0 };
+    this.camX = 0;
+    // floating acorns over the gaps
+    for (const a of this.roofAcorns) g.pickups.push(new Pickup('acorn', a.x, a.z, 0, 0, { air: true, h: a.z - a.sy }));
+    g.cardTop = 'LEVEL ' + this.L.n + ' — DETOUR'; g.cardMain = this.roofTheme().title; g.card = 170;
+    g.after(60, () => { g.toast('Gaps too wide to jump? Press L by the edge to SWING'); });
+    g.after(240, () => { g.toast('Hold ← → to pump the swing, JUMP to let go'); });
+  },
+
+  // ---------------- per-frame ----------------
+  updateRoof(g) {
+    const p = g.hero, L = this.roofLock;
+    // camera: follow freely (not belt-locked) so respawns and back-swings stay in view
+    let tx = p.x - W * 0.42 + clamp(p.vx, -12, 12) * 10;
+    if (L) { const span = L.x1 - L.x0; tx = span + 160 < W ? (L.x0 + L.x1) / 2 - W / 2 : clamp(tx, L.x0 - 80, L.x1 + 80 - W); }
+    tx = clamp(tx, 0, this.roofLen - W);
+    this.camX = lerp(this.camX, tx, 0.1);
+    // fights: lock onto the pad when the hero lands on it
+    for (const gr of this.roofGroups) {
+      if (gr.done || !p.pad || p.pad !== gr.pad || p.overGap || p.x < gr.pad.x0 + 120 || p.h > 40) continue;
+      gr.done = true; this.roofLock = gr.pad; this.spawnRoofGroup(g, gr);
+    }
+    if (L && !g.enemies.some(e => !e.dead && e.pad === L && !e.falling)) { this.roofLock = null; g.go = 120; Audio2.play('clear'); }
+    for (const lk of this.roofLookouts) {
+      if (lk.done || p.x < lk.pad.x0 - 950 || p.pad === lk.pad) continue; lk.done = true;
+      const [z0, z1] = this.band(lk.pad), e = new Enemy(lk.kind, lk.x, (z0 + z1) / 2, { enter: 10 }); e.pad = lk.pad; e.dir = -1; e.cd = 90; e.lookout = true; g.enemies.push(e);
+      if (!this.lookoutTip) { this.lookoutTip = true; g.toast('Lookout across the gap — YANK him off with L!'); }
+    }
+    // exit: drop off the far end of the last roof
+    if (!this.trans && p.x > this.roofExitX + 30 && p.overGap) { this.exitRoof(g); }
+    // blinkers
+    for (const v of this.roofVents) v.t++;
+  },
+  spawnRoofGroup(g, gr) {
+    const P = gr.pad, pool = this.L.pool, p = g.hero;
+    for (let i = 0; i < gr.size; i++) {
+      const k = pool[Math.floor(Math.random() * pool.length)];
+      let x = P.x0 + 80 + Math.random() * (P.x1 - P.x0 - 160); if (Math.abs(x - p.x) < 220) x = p.x + (x < p.x ? -1 : 1) * 260;
+      x = clamp(x, P.x0 + 60, P.x1 - 60);
+      const [z0, z1] = this.band(P);
+      const e = new Enemy(k, x, lerp(z0 + 6, z1 - 6, Math.random()), { enter: 40 + i * 12, h: 360 + i * 70 });
+      e.pad = P; e.dir = sign(p.x - x) || -1; e.cd = 60 + i * 30; g.enemies.push(e);
+    }
+    g.toast(pick(['They dropped in from the water towers!', 'Ambush on the roof!', 'Crew on the ledge!']));
+    Audio2.play('alert');
+  },
+
+  // ---------------- collision / bounds ----------------
+  clampRoof(a, isHero) {
+    if (isHero) return this.clampHeroRoof(a);
+    let P = a.pad; if (!P) { P = this.padAt(a.x) || this.nearestPad(a.x); a.pad = P; }
+    if (a.falling) return;
+    const [z0, z1] = this.band(P); a.z = clamp(a.z, z0, z1);
+    const lo = P.x0 + 24, hi = P.x1 - 24;
+    if (a.x >= lo && a.x <= hi) return;
+    if (a instanceof Enemy) {
+      const out = a.x < lo ? -1 : 1, involuntary = a.dead || ['air', 'down', 'hurt', 'stagger', 'stunned'].includes(a.state);
+      if (involuntary && !a.boss && sign(a.vx) === out && Math.abs(a.vx) > 1.2) { if (a.x < P.x0 - 6 || a.x > P.x1 + 6) a.startFall(G); return; }
+    }
+    a.x = clamp(a.x, lo, hi);
+  },
+  clampHeroRoof(p) {
+    if (!p.pad) p.pad = this.padAt(p.x) || this.pads[0];
+    const Q = this.padAt(p.x), from = p.lastX != null ? p.lastX : p.x;
+    if (Q && Q !== p.pad) {
+      const d = Q.elev - p.pad.elev, nh = p.h - d;
+      if (nh < -4) { p.x = from < Q.x0 ? Q.x0 - 1 : Q.x1 + 1; p.vx = 0; if (p.swing) p.releaseSwing(G, 0.2); p.overGap = true; }
+      else { p.z -= d; p.h = nh; p.pad = Q; p.overGap = false; }
+    } else if (!Q) p.overGap = true;
+    else if (p.overGap) { if (p.h < -4) { p.x = from < (Q.x0 + Q.x1) / 2 ? Q.x0 - 1 : Q.x1 + 1; p.vx = 0; } else p.overGap = false; }
+    const P = p.pad, [z0, z1] = this.band(P); p.z = clamp(p.z, z0, z1);
+    let lo = Math.max(30, this.camX + 24), hi = Math.min(this.roofLen - 30, this.camX + W - 24);
+    if (this.roofLock) { lo = Math.max(lo, this.roofLock.x0 + 22); hi = Math.min(hi, this.roofLock.x1 - 22); }
+    p.x = clamp(p.x, lo, Math.max(lo, hi));
+    if (!p.overGap && p.h <= 1 && p.state === 'free' && P) p.safe = { x: clamp(p.x, P.x0 + 90, P.x1 - 90), z: p.z, pad: P };
+    p.lastX = p.x;
+  },
+  // the hero dropped into a gap
+  roofFall(g) {
+    const p = g.hero;
+    if (p.x > this.roofExitX) return this.exitRoof(g);
+    g.roofFalls = (g.roofFalls || 0) + 1;
+    const S = p.safe; p.x = S.x; p.pad = S.pad; p.z = S.z; p.h = 220; p.vh = 0; p.vx = 0; p.vz = 0; p.overGap = false; p.state = 'free'; p.swing = null; p.hook = null; p.lastX = p.x;
+    p.iframes = 90; this.camX = clamp(p.x - W * 0.42, 0, this.roofLen - W);
+    const dmg = 8; p.hp = Math.max(1, p.hp - dmg); g.cred.hurt(); p.flashT = 12;
+    Particles.text(g, p.x, p.z - 260, '-' + dmg, '#ff6b6b'); Audio2.play('hurt');
+    g.toast('Missed! Press L mid-fall to grab a hook');
+  },
+
+  // ---------------- drawing ----------------
+  drawRoofBack(c, g) {
+    const T = this.roofTheme(), cx = this.camX;
+    c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'high';
+    if (T.outdoor) {
+      const sk = c.createLinearGradient(0, 0, 0, H); sk.addColorStop(0, this.skyCol); sk.addColorStop(0.6, shade('#1a2030', -0.3)); sk.addColorStop(1, '#05060a'); c.fillStyle = sk; c.fillRect(0, 0, W, H);
+      this.tile(c, this.roofSky, cx * 0.08, 30, 340);
+      const fb = c.createLinearGradient(0, 300, 0, 372); fb.addColorStop(0, 'rgba(9,11,17,0)'); fb.addColorStop(1, 'rgba(9,11,17,1)'); c.fillStyle = fb; c.fillRect(0, 300, W, 72); c.fillStyle = '#090b11'; c.fillRect(0, 370, W, H - 370);
+      const mid = this.roofMid; let x0 = -((cx * 0.32) % mid.width); if (x0 > 0) x0 -= mid.width;
+      for (let x = x0; x < W; x += mid.width) c.drawImage(mid, Math.floor(x), H - mid.height + 40);
+      const hz = c.createLinearGradient(0, 300, 0, H); hz.addColorStop(0, 'rgba(10,12,20,0)'); hz.addColorStop(1, RoofArt.hex(T.accent, 0.12)); c.fillStyle = hz; c.fillRect(0, 300, W, H - 300);
+    } else {
+      c.fillStyle = '#05060a'; c.fillRect(0, 0, W, H);
+      this.tile(c, this.layers[0], cx * 0.12, 0, 420);
+      c.fillStyle = 'rgba(4,5,8,.35)'; c.fillRect(0, 0, W, 420);
+      this.tile(c, this.layers[1], cx * 0.3, 330, 300);
+      c.fillStyle = 'rgba(4,5,8,.62)'; c.fillRect(0, 330, W, 300);
+      const pg = c.createLinearGradient(0, 470, 0, H); pg.addColorStop(0, 'rgba(0,0,0,0)'); pg.addColorStop(0.6, 'rgba(0,0,0,.75)'); pg.addColorStop(1, RoofArt.hex(T.pit, 0.42)); c.fillStyle = pg; c.fillRect(0, 470, W, H - 470);
+      // pit glow shimmer
+      c.save(); c.globalCompositeOperation = 'lighter'; for (let i = 0; i < 6; i++) { const gx = ((i * 260 - cx * 0.9) % (W + 300) + W + 300) % (W + 300) - 150, a = 0.08 + 0.05 * Math.sin(g.time * 2 + i); const gl = c.createRadialGradient(gx, H, 10, gx, H, 220); gl.addColorStop(0, RoofArt.hex(T.pit, a)); gl.addColorStop(1, RoofArt.hex(T.pit, 0)); c.fillStyle = gl; c.fillRect(gx - 220, H - 220, 440, 220); } c.restore();
+    }
+    if (g.lightning > 0 && T.outdoor) { c.fillStyle = `rgba(200,210,255,${g.lightning * 0.25})`; c.fillRect(0, 0, W, H); }
+    // gaps: far-below street glow for outdoor courses
+    if (T.outdoor) for (let i = 0; i < this.pads.length - 1; i++) {
+      const gx0 = this.pads[i].x1 - cx, gx1 = this.pads[i + 1].x0 - cx; if (gx1 < -50 || gx0 > W + 50) continue;
+      const g2 = c.createLinearGradient(0, 560, 0, H); g2.addColorStop(0, 'rgba(0,0,0,0)'); g2.addColorStop(1, RoofArt.hex(T.accent, 0.2)); c.fillStyle = g2; c.fillRect(gx0, 560, gx1 - gx0, H - 560);
+    }
+    // pads
+    for (const P of this.pads) {
+      const sx = P.x0 - cx; if (sx > W || sx + P.img.width < 0) continue;
+      c.drawImage(P.img, Math.floor(sx), P.yTop);
+      for (const b of P.blinks) if ((g.frame + b.x) % 70 < 35) { c.fillStyle = '#ff3b3b'; c.beginPath(); c.arc(sx + b.x, b.y, 3.5, 0, 7); c.fill(); c.save(); c.globalCompositeOperation = 'lighter'; c.fillStyle = 'rgba(255,60,60,.25)'; c.beginPath(); c.arc(sx + b.x, b.y, 12, 0, 7); c.fill(); c.restore(); }
+    }
+    // exit marker beyond the last roof
+    const ex = this.roofExitX - cx; if (ex > -100 && ex < W + 100) {
+      const y = 300 + Math.sin(g.time * 5) * 8; c.fillStyle = 'rgba(255,211,107,.9)'; c.beginPath(); c.moveTo(ex + 120, y + 60); c.lineTo(ex + 90, y + 20); c.lineTo(ex + 150, y + 20); c.fill();
+      txt(c, 'DROP', ex + 120, y, 22, '#ffd36b', 'center'); txt(c, 'back to the street', ex + 120, y + 88, 12, '#e8d9b0', 'center');
+    }
+    // vents
+    for (const v of this.roofVents) { if (!this.onScreen(v.x)) continue; const [sx, sy] = this.toScreen(v.x, v.z, 0); c.fillStyle = '#1b1b1f'; c.beginPath(); c.ellipse(sx, sy, 30, 9, 0, 0, 7); c.fill(); c.strokeStyle = '#3a3a40'; c.lineWidth = 2; c.stroke(); if (v.t % 6 === 0) Particles.steam(g, v.x + rand(-12, 12), v.z, g.hero.fly > 0); }
+  },
+  drawRoofAnchors(c, g) {
+    const p = g.hero, T = this.roofTheme(), cx = this.camX;
+    for (const a of this.roofAnchors) {
+      const sx = a.x - cx, sy = a.sy; if (sx < -500 || sx > W + 500) continue;
+      c.save();
+      if (a.style === 'crane') {
+        // jib truss across the top of the screen
+        c.fillStyle = '#c9a227'; c.fillRect(sx - 460, 20, 920, 7); c.fillRect(sx - 460, 50, 920, 7);
+        c.strokeStyle = '#a8861c'; c.lineWidth = 3; c.beginPath(); for (let k = -460; k < 460; k += 40) { c.moveTo(sx + k, 27); c.lineTo(sx + k + 40, 50); c.moveTo(sx + k + 40, 27); c.lineTo(sx + k + 40, 50); } c.stroke();
+        c.fillStyle = 'rgba(0,0,0,.25)'; c.fillRect(sx - 460, 57, 920, 4);
+        c.fillStyle = '#2a2a2e'; c.fillRect(sx - 18, 46, 36, 18);
+        c.strokeStyle = '#1a1a1e'; c.lineWidth = 3; c.beginPath(); c.moveTo(sx - 4, 60); c.lineTo(sx - 4, sy - 34); c.moveTo(sx + 4, 60); c.lineTo(sx + 4, sy - 34); c.stroke();
+        c.fillStyle = '#c9a227'; c.fillRect(sx - 13, sy - 40, 26, 22); c.fillStyle = '#111'; for (let k = 0; k < 3; k++) c.fillRect(sx - 13 + k * 10, sy - 40, 4, 22);
+      } else if (a.style === 'wire') {
+        const A = this.padAt(a.gap[0] - 4), B = this.padAt(a.gap[1] + 4);
+        const ya = A ? A.yb - 4 : 520, yb2 = B ? B.yb - 4 : 520, xa = a.gap[0] - 60 - cx, xb = a.gap[1] + 60 - cx, top = sy - 70;
+        c.fillStyle = '#1b1712'; c.fillRect(xa - 4, top, 8, ya - top); c.fillRect(xb - 4, top, 8, yb2 - top); c.fillRect(xa - 26, top + 10, 52, 5); c.fillRect(xb - 26, top + 10, 52, 5);
+        c.strokeStyle = '#0d0d10'; c.lineWidth = 2.5; c.beginPath(); c.moveTo(xa, top + 12); c.quadraticCurveTo(sx, sy * 2 - top - 12, xb, top + 12); c.stroke();
+        c.beginPath(); c.moveTo(xa - 20, top + 12); c.quadraticCurveTo(sx, sy * 2 - top + 6, xb + 20, top + 12); c.stroke();
+        c.fillStyle = '#6a6e74'; c.fillRect(sx - 9, sy - 22, 18, 12);
+      } else { // chain from a ceiling rail
+        c.fillStyle = '#2a2e34'; c.fillRect(sx - 360, 0, 720, 16); c.fillStyle = '#3c424a'; c.fillRect(sx - 360, 14, 720, 4);
+        c.strokeStyle = '#6a6e74'; c.lineWidth = 3; for (let y = 18; y < sy - 16; y += 12) { c.beginPath(); c.ellipse(sx, y + 6, 3.5, 6, 0, 0, 7); c.stroke(); }
+      }
+      // the hook ring itself
+      const inRange = Math.abs(a.x - p.x) < 600 && p.state !== 'swing';
+      c.strokeStyle = '#d9dde3'; c.lineWidth = 4; c.beginPath(); c.arc(sx, sy - 4, 10, 0, 7); c.stroke();
+      if (inRange) { c.strokeStyle = `rgba(255,214,120,${0.5 + 0.4 * Math.sin(g.time * 7)})`; c.lineWidth = 2.5; c.beginPath(); c.arc(sx, sy - 4, 18 + 3 * Math.sin(g.time * 7), 0, 7); c.stroke(); }
+      c.restore();
+    }
+    // perches on water towers
+    for (const a of this.roofPerches || []) {
+      if (!this.onScreen(a.x)) continue; const [sx, sy] = this.toScreen(a.x, a.z, a.h);
+      if (Math.abs(a.x - p.x) < 520 && !p.perch && p.state !== 'swing') { c.strokeStyle = `rgba(255,214,120,${0.35 + 0.3 * Math.sin(g.time * 7)})`; c.lineWidth = 2; c.beginPath(); c.arc(sx, sy - 6, 14, 0, 7); c.stroke(); }
+    }
+  },
+});
 
 // ============================================================
 //  FX — projectiles, pickups, particles, rings
@@ -781,7 +1298,7 @@ class Projectile {
 class Pickup {
   constructor(type, x, z, vx = 0, vh = 0, opt = {}) {
     this.type = type; this.x = x; this.z = z; this.h = vh ? 60 : 0; this.vx = vx; this.vz = opt.vz || rand(-1, 1); this.vh = -vh; this.t = rand(0, 100); this.dead = false;
-    this.free = vh !== 0; this.weaponId = opt.weaponId || null; this.dur = opt.dur; this.spin = 0; this.life = opt.life || (type === 'acorn' ? 900 : type === 'weapon' ? 1080 : 1500);
+    this.free = vh !== 0; this.air = !!opt.air; if (this.air) { this.h = opt.h; this.free = false; } this.weaponId = opt.weaponId || null; this.dur = opt.dur; this.spin = 0; this.life = opt.life || (type === 'acorn' ? 900 : type === 'weapon' ? 1080 : 1500);
   }
   update(g) {
     this.t++; const p = g.hero;
@@ -790,6 +1307,11 @@ class Pickup {
       g.stage.clamp(this); }
     if (this.t > this.life) { this.dead = true; return; }
     if (this.weaponId) return; // weapons are picked up with the Pickup button
+    if (this.air) { // floating acorns over rooftop gaps: grab them mid-swing
+      this.t = this.t % 600; const hy = p.z - p.h - 80, ey = this.z - this.h;
+      if (Math.abs(p.x - this.x) < 56 && Math.abs(hy - ey) < 90) { this.dead = true; g.acorns++; g.score += 25; Audio2.play('nut'); Particles.ring(g, this.x, ey, '#ffd36b', 10); g.cred.add(15, 'airnut'); }
+      return;
+    }
     const dx = p.x - this.x, dz = p.z - this.z, d = Math.hypot(dx, dz);
     if (this.type === 'acorn' && d < 90 && !this.free) { this.x += dx / d * 8; this.z += dz / d * 8; }
     if (d < 40 && p.h < 60 && !this.free) {
@@ -802,7 +1324,8 @@ class Pickup {
   draw(c, g) {
     const st = g.stage, s = st.depthScale(this.z); if (!st.onScreen(this.x)) return;
     const bob = this.free ? 0 : Math.sin(this.t * 0.08) * 4, [sx, sy] = st.toScreen(this.x, this.z, this.h + bob + (this.weaponId ? 4 : 10)), [gx, gy] = st.toScreen(this.x, this.z, 0);
-    c.fillStyle = 'rgba(0,0,0,.3)'; c.beginPath(); c.ellipse(gx, gy, 18 * s, 5 * s, 0, 0, 7); c.fill();
+    if (!this.air) { c.fillStyle = 'rgba(0,0,0,.3)'; c.beginPath(); c.ellipse(gx, gy, 18 * s, 5 * s, 0, 0, 7); c.fill(); }
+    else { c.save(); c.globalCompositeOperation = 'lighter'; c.fillStyle = `rgba(255,210,110,${0.18 + 0.1 * Math.sin(this.t * 0.1)})`; c.beginPath(); c.arc(sx, sy - 12, 20, 0, 7); c.fill(); c.restore(); }
     const blink = this.t > this.life - 120 && this.t % 10 < 5; if (blink) return;
     if (this.weaponId) {
       const W_ = WEAPONS[this.weaponId];
@@ -891,8 +1414,9 @@ class Hero {
     this.state = 'free'; this.t = 0; this.st = 0; this.move = null; this.hitSet = new Set(); this.queued = null; this.comboT = 0;
     this.weapon = null; this.iframes = 0; this.hook = null; this.perch = null; this.ride = null; this.glide = false; this.jumps = 0;
     this.trail = []; this.lastMoves = []; this.dead = false; this.flashT = 0; this.runT = 0; this.held = null;
+    this.pad = null; this.overGap = false; this.swing = null; this.launchT = 0; this.noFallT = 0; this.lastX = null;
   }
-  get onGround() { return this.h <= 0.01 && !this.perch && !this.ride; }
+  get onGround() { return this.h <= 0.01 && !this.perch && !this.ride && !this.overGap && this.state !== 'swing'; }
   get busy() { return this.state !== 'free'; }
 
   update(g) {
@@ -901,12 +1425,16 @@ class Hero {
     if (this.fly > 0) { this.fly--; if (this.fly === 0) { g.toast('Bio-Surge wore off'); Audio2.play('ko'); } if (this.t % 4 === 0 && (Math.abs(this.vx) > 4 || !this.onGround)) this.trail.push({ x: this.x, z: this.z, h: this.h, f: this.frameName(), dir: this.dir, a: 0.28 }); }
     let ax = (I.isDown('right') ? 1 : 0) - (I.isDown('left') ? 1 : 0), az = (I.isDown('down') ? 1 : 0) - (I.isDown('up') ? 1 : 0);
     if (this.dead) { this.physics(g); return; }
+    // rooftops: dropped down a gap
+    if (this.noFallT > 0) this.noFallT--;
+    if (st.mode === 'roof' && this.overGap && this.noFallT <= 0 && this.z - this.h > H + 40 && !st.trans) { st.roofFall(g); return; }
 
     switch (this.state) {
       case 'hurt': this.vx *= 0.85; this.vz *= 0.85; if (this.st > 16) this.state = 'free'; this.physics(g); return;
       case 'down': this.vx *= 0.9; this.physics(g); if (this.st > 46 && this.onGround) { this.state = 'getup'; this.st = 0; this.iframes = 50; } return;
       case 'getup': if (this.st > 14) this.state = 'free'; return;
       case 'perch': return this.updatePerch(g, ax, az);
+      case 'swing': return this.updateSwing(g, ax, az);
       case 'ride': return this.updateRide(g, ax);
       case 'hook': return this.updateHook(g);
       case 'zip': return this.updateZip(g);
@@ -961,7 +1489,10 @@ class Hero {
     const sprint = this.runT > 40;
     const max = (this.glide ? 9.5 : (sprint ? 7.8 : 6)) * (this.weapon && WEAPONS[this.weapon.id].prop ? 0.85 : 1);
     const acc = this.onGround ? 0.9 : 0.45, dec = this.onGround ? 1.1 : 0.12;
-    this.vx = ax ? approach(this.vx, ax * max, sign(ax) !== sign(this.vx) && this.vx ? acc * 1.8 : acc) : approach(this.vx, 0, dec);
+    if (this.launchT > 0) this.launchT--; if (this.onGround) this.launchT = 0;
+    const keep = this.launchT > 0 && !this.onGround && Math.abs(this.vx) > max && (!ax || sign(ax) === sign(this.vx));
+    if (keep) this.vx *= 0.994;
+    else this.vx = ax ? approach(this.vx, ax * max, sign(ax) !== sign(this.vx) && this.vx ? acc * 1.8 : acc) : approach(this.vx, 0, dec);
     this.vz = az ? approach(this.vz, az * max * (this.glide ? 0.75 : 0.62), acc) : approach(this.vz, 0, dec);
     if (ax) this.dir = sign(ax);
     if (ax && this.onGround) this.runT++; else if (!ax) this.runT = 0;
@@ -973,7 +1504,7 @@ class Hero {
       if (!this.onGround || this.vh > 0) {
         this.vh -= this.vh > 0 ? 0.62 : 0.8;
         if (this.glide) { this.vh = Math.max(this.vh, -1.3); if (this.t % 3 === 0) Particles.add(g, { x: this.x - this.dir * 20, y: this.z - this.h - 40, vx: -this.dir, vy: 0.3, col: 'rgba(255,200,90,.7)', life: 24, size: 3, grav: 0 }); }
-        this.h += this.vh; if (this.h <= 0) { if (this.vh < -9) { Audio2.play('land'); Particles.dust(g, this.x, this.z, 6); } this.h = 0; this.vh = 0; this.jumps = 0; }
+        this.h += this.vh; if (this.h <= 0 && !this.overGap) { if (this.vh < -9) { Audio2.play('land'); Particles.dust(g, this.x, this.z, 6); } this.h = 0; this.vh = 0; this.jumps = 0; }
       }
     }
     this.x += this.vx; this.z += this.vz;
@@ -1003,6 +1534,7 @@ class Hero {
   updateAttack(g, ax, az) {
     const m = this.move, I = Input;
     if (this.onGround && !m.air) { this.vx = approach(this.vx, 0, 0.6); this.vz = approach(this.vz, 0, 0.6); }
+    else if (this.launchT > 0) { this.launchT--; this.vx *= 0.995; }
     else { this.vx = approach(this.vx, ax * 5, 0.3); }
     if (this.st > m.start && this.st <= m.start + m.active) this.hitCheck(g, m);
     // queue next combo hit
@@ -1095,7 +1627,7 @@ class Hero {
     if (e && !e.dead) { this.vx = clamp((e.x - this.x) * 0.12, -16, 16); this.vz = clamp((e.z - this.z) * 0.12, -9, 9); } else this.vx = this.dir * 10;
     this.vh = -20; this.h += this.vh; this.x += this.vx; this.z += this.vz; g.stage.clamp(this, true);
     if (this.t % 2 === 0) this.trail.push({ x: this.x, z: this.z, h: this.h, f: 'dive0', dir: this.dir, a: 0.5 });
-    if (this.h <= 0) {
+    if (this.h <= 0 && !this.overGap) {
       this.h = 0; this.vh = 0; this.state = 'attack'; this.move = { f: ['stomp'], start: 0, active: 0, rec: 14, dmg: 0 }; this.moveId = 'diveland'; this.st = 0;
       g.shake = 14; g.hitstop = 6; Audio2.play('boom'); Particles.ring(g, this.x, this.z, '#ffd27a', 26); Particles.dust(g, this.x, this.z, 18);
       for (const en of g.enemies) if (!en.dead && en.hittable && Math.hypot(en.x - this.x, (en.z - this.z) * 1.6) < 170) { en.takeHit(g, { dmg: 26, dir: sign(en.x - this.x) || 1, kb: 10, launch: true, heavy: true, guardBreak: true, disarm: true, src: 'dive' }); }
@@ -1118,12 +1650,28 @@ class Hero {
   }
   findHookTarget(g) {
     let best = null, bd = 1e9; const st = g.stage;
+    // rooftops: swing hooks win whenever you're airborne, falling, or near an edge
+    let swingT = null;
+    if (st.mode === 'roof') {
+      let sd = 1e9; const hy = this.z - this.h - ROOF.HAND;
+      for (const a of st.roofAnchors) {
+        if (st.roofLock) continue; // no swinging away from a rooftop brawl
+        const dx = (a.x - this.x) * this.dir, ady = hy - a.sy;
+        const ok = ((dx > -140 && dx < 660) || (this.overGap && Math.abs(a.x - this.x) < 560)) && ady > -60;
+        if (!ok) continue; const d = Math.abs(dx) + (dx < 0 ? 260 : 0); if (d < sd) { sd = d; swingT = a; }
+      }
+      const P = st.padAt(this.x), edge = P ? (this.dir > 0 ? P.x1 - this.x : this.x - P.x0) : 0;
+      if (swingT && (!this.onGround || !P)) return { type: 'swing', ref: swingT, x: swingT.x, z: this.z, h: this.z - swingT.sy };
+      var edgeSwing = swingT && edge < 330;
+    }
+    const roof = st.mode === 'roof';
     const consider = (type, ref, x, z, h, maxD, lane) => {
       const dx = (x - this.x) * this.dir, dz = Math.abs(z - this.z);
       if (dx < 20 || dx > maxD || (lane && dz > lane)) return;
       const d = dx + dz * 2 + (type === 'anchor' ? 120 : 0); if (d < bd) { bd = d; best = { type, ref, x, z, h }; }
     };
-    for (const e of g.enemies) if (!e.dead && e.hittable && st.onScreen(e.x)) consider('enemy', e, e.x, e.z, e.h, 480, 80);
+    for (const e of g.enemies) if (!e.dead && e.hittable && st.onScreen(e.x)) consider('enemy', e, e.x, e.z, e.h, roof ? 580 : 480, roof ? 150 : 80);
+    if (roof && edgeSwing && (!best || best.type !== 'enemy')) return { type: 'swing', ref: swingT, x: swingT.x, z: this.z, h: this.z - swingT.sy };
     for (const it of g.pickups) if (it.weaponId && !it.dead) consider('item', it, it.x, it.z, it.h, 420, 70);
     for (const p of st.allProps()) if (!p.dead && !p.car) consider('prop', p, p.x, p.z, 0, 400, 70);
     if (st.mode === 'street') for (const c of st.cars) if (c.state !== 'burn') consider('car', c, c.x - c.dir * c.w * 0.2, c.z, c.roofH, 600, 110);
@@ -1132,11 +1680,16 @@ class Hero {
       for (const a of st.allAnchors()) { const dx = Math.abs(a.x - this.x); if (dx < 520 && dx < ab && (dx < 120 || sign(a.x - this.x) === this.dir || Input.isDown('up'))) { ab = dx; anc = a; } }
       if (anc) best = { type: 'anchor', ref: anc, x: anc.x, z: anc.z, h: anc.h };
     }
+    // the rooftop fire escape beats crates and pickups once the street is barricaded
+    if (st.mode === 'street' && !st.roofDone && (!best || best.type !== 'enemy')) { const a = st.anchors.find(k => k.kind === 'roofup'); if (a && Math.abs(a.x - this.x) < 640 && g.liveEnemies() === 0) best = { type: 'anchor', ref: a, x: a.x, z: a.z, h: a.h }; }
+    if (!best && swingT) best = { type: 'swing', ref: swingT, x: swingT.x, z: this.z, h: this.z - swingT.sy };
     return best;
   }
   updateHook(g) {
     const H_ = this.hook; H_.t++;
-    this.vx *= 0.8; this.vz *= 0.8; this.physics(g);
+    if (g.stage.mode === 'roof' && !this.onGround) { this.vx *= 0.985; } else { this.vx *= 0.8; this.vz *= 0.8; }
+    this.physics(g);
+    if (this.state !== 'hook') return;
     if (H_.phase === 'out') {
       const T = H_.T; if (T && T.type === 'enemy') { H_.tx = T.ref.x; H_.tz = T.ref.z; H_.th = T.ref.h + T.ref.K.h * 0.55; }
       if (T && T.type === 'car') { H_.tx = T.ref.x; H_.tz = T.ref.z; }
@@ -1175,7 +1728,8 @@ class Hero {
     } else if (T.type === 'item') { r.free = false; H_.phase = 'pull'; H_.obj = r; H_.item = true; }
     else if (T.type === 'prop') { H_.phase = 'pull'; H_.obj = r; H_.prop = true; H_.hitE = new Set(); }
     else if (T.type === 'car') { this.state = 'zip'; this.st = 0; this.zipCar = r; this.iframes = 40; H_.phase = 'attached'; }
-    else if (T.type === 'anchor') { this.state = 'zip'; this.st = 0; this.zipAnchor = r; H_.phase = 'attached'; }
+    else if (T.type === 'anchor') { this.state = 'zip'; this.st = 0; this.zipAnchor = r; H_.phase = 'attached'; if (r.kind === 'roofup') { this.iframes = 80; g.cred.add(60, 'roofup'); } }
+    else if (T.type === 'swing') { this.startSwing(g, r); }
   }
   updateZip(g) {
     const H_ = this.hook; this.st++;
@@ -1191,10 +1745,55 @@ class Hero {
       if (this.zipT) { const e = this.zipT; this.zipT = null; this.state = 'attack'; this.move = MOVES.air; this.moveId = 'dropkick'; this.st = MOVES.air.start + 1; this.hitSet = new Set([e]);
         e.takeHit(g, { dmg: 18, dir: this.dir, kb: 9, heavy: true, guardBreak: true, disarm: true, src: 'dropkick' }); g.hitstop = 9; g.shake = 8; Audio2.play('heavy'); g.cred.add(80, 'dropkick'); this.vh = 6; }
       else if (this.zipCar) { const c = this.zipCar; this.zipCar = null; if (c.state === 'burn' || c.gone) { this.state = 'free'; return; } this.state = 'ride'; this.ride = c; c.rider = this; this.st = 0; g.toast('ROOF RIDE! Attack to smash the car'); g.cred.add(80, 'hijack'); }
-      else { const a = this.zipAnchor; this.zipAnchor = null; this.state = 'perch'; this.perch = a; this.st = 0; this.vh = 0; }
+      else { const a = this.zipAnchor; this.zipAnchor = null; if (a.kind === 'roofup') { this.state = 'free'; this.vh = 0; g.stage.enterRoof(g); return; } if (a.pad) { this.pad = a.pad; this.overGap = false; this.lastX = a.x; } this.state = 'perch'; this.perch = a; this.st = 0; this.vh = 0; }
       return;
     }
     this.x += dx / d * sp; this.z += dz / d * sp; this.h += dh / d * sp; this.dir = sign(dx) || this.dir;
+  }
+  // ---------------- swinging (rooftops) ----------------
+  startSwing(g, a) {
+    const hy = this.z - this.h - ROOF.HAND, dx = this.x - a.x, dy = Math.max(30, hy - a.sy);
+    const R0 = Math.hypot(dx, dy), th = Math.atan2(dx, dy);
+    let w = (this.vx * Math.cos(th) + this.vh * Math.sin(th)) / Math.max(R0, 80);
+    if (this.onGround) w = this.dir * Math.max(Math.abs(w), 0.05); else if (Math.abs(w) < 0.03) w = this.dir * 0.035;
+    this.swing = { a, R: R0, Rt: clamp(Math.min(R0, a.maxR), 140, 320), th, w, t: 0, hit: new Set() };
+    this.state = 'swing'; this.st = 0; this.hook = null; this.vz = 0; this.jumps = 0;
+    Audio2.play('whoosh'); g.cred.add(30, 'swing');
+  }
+  updateSwing(g, ax, az) {
+    const S = this.swing, a = S.a, I = Input; if (!S) { this.state = 'free'; return; }
+    S.t++; this.st++;
+    const Rp = S.R; S.R = approach(S.R, S.Rt, 15); if (S.R !== Rp) S.w *= Math.min(1.06, Rp / S.R);
+    let acc = -(0.95 / S.R) * Math.sin(S.th);
+    if (ax && (sign(ax) === sign(S.w) || Math.abs(S.w) < 0.012)) acc += 0.0013 * ax;
+    const wMax = 14.5 / S.R; S.w = clamp((S.w + acc) * 0.997, -wMax, wMax); S.th += S.w;
+    if (Math.abs(S.th) > 1.45) { S.th = sign(S.th) * 1.45; S.w *= -0.3; }
+    const nx = a.x + S.R * Math.sin(S.th), nh = this.z - (a.sy + S.R * Math.cos(S.th)) - ROOF.HAND;
+    this.vx = nx - this.x; this.vh = nh - this.h; this.x = nx; this.h = nh;
+    if (Math.abs(S.w) > 0.004) this.dir = sign(S.w * Math.cos(S.th)) || this.dir;
+    g.stage.clamp(this, true); if (this.state !== 'swing') return;
+    if (!this.overGap && this.h < 0) { if (S.t > 14 && this.vh < 0) { this.h = 0; this.releaseSwing(g, 0.5); return; } this.h = 0; }
+    // swing kick: plough through anyone in the arc
+    const sp = Math.abs(S.w) * S.R, cy = this.z - this.h - 70;
+    if (sp > 6) for (const e of g.enemies) {
+      if (e.dead || !e.hittable || S.hit.has(e)) continue;
+      if (Math.abs(e.x - this.x) < 74 && Math.abs((e.z - e.h - e.K.h * 0.5) - cy) < 95) {
+        S.hit.add(e); const dir = sign(this.vx) || this.dir;
+        e.takeHit(g, { dmg: 14, dir, kb: 15, launch: true, heavy: true, disarm: true, src: 'swingkick' });
+        g.hitstop = Math.max(g.hitstop, 6); g.shake = Math.max(g.shake, 6); Audio2.play('heavy'); g.cred.add(80, 'swingkick'); Particles.text(g, e.x, e.z - 210, 'SWING KICK!', '#ffd36b');
+      }
+    }
+    // controls
+    if (I.buffered('jump', 6)) { I.consume('jump'); return this.releaseSwing(g, 1.12); }
+    if (I.buffered('attack', 6)) { I.consume('attack'); this.releaseSwing(g, 1.05); return this.startMove(g, 'air'); }
+    if (I.buffered('grapple', 6)) { I.consume('grapple'); this.releaseSwing(g, 1.0); return this.fireHook(g); }
+    if (I.buffered('dodge', 6) || (az > 0 && S.t > 10) || S.t > 420) { I.consume('dodge'); return this.releaseSwing(g, 0.6); }
+  }
+  releaseSwing(g, boost) {
+    const S = this.swing; this.swing = null; this.state = 'free'; this.st = 0; if (!S) return;
+    const v = S.w * S.R; this.vx = v * Math.cos(S.th) * boost; this.vh = v * Math.sin(S.th) * boost + (boost >= 1 ? 3.5 : 0);
+    this.launchT = 60; this.jumps = Math.max(this.jumps, boost >= 1 ? 1 : 0);
+    if (boost >= 1) { Audio2.play('jump'); if (Math.abs(this.vx) > 8) { g.cred.add(40, 'swingjump'); Particles.ring(g, this.x, this.z - this.h - 70, '#ffd27a', 12); } }
   }
   updatePerch(g, ax, az) {
     const a = this.perch, I = Input; this.x = a.x; this.z = a.z; this.h = a.h;
@@ -1240,7 +1839,7 @@ class Hero {
   hurt(g, dmg, dir, knock) {
     if (this.iframes > 0 || this.dead || this.state === 'finisher') return false;
     if (this.weapon && WEAPONS[this.weapon.id].block && this.state === 'attack' && sign(dir) === -this.dir) { Audio2.play('block'); this.weapon.dur--; if (this.weapon.dur <= 0) this.breakWeapon(g); return false; }
-    if (this.ride) this.leaveCar(g); if (this.perch) this.perch = null; this.hook = null;
+    if (this.ride) this.leaveCar(g); if (this.perch) this.perch = null; this.hook = null; this.swing = null;
     this.hp -= dmg; this.iframes = 40; this.flashT = 10; g.cred.hurt(); g.shake = Math.max(g.shake, 7); g.hitstop = Math.max(g.hitstop, 4);
     Audio2.play('hurt'); Particles.burst(g, this.x, this.z - 90, '#ff5050', 10, 5); Particles.text(g, this.x, this.z - 200, '-' + Math.round(dmg), '#ff6b6b');
     if (this.hp <= 0) { this.hp = 0; this.dead = true; this.state = 'down'; this.st = 0; this.vh = 8; this.vx = dir * 6; g.heroDied(); return true; }
@@ -1256,6 +1855,7 @@ class Hero {
     if (s === 'hook') return this.st < 8 ? 'shoot0' : 'shoot1';
     if (s === 'zip') return this.zipT ? 'flykick' : 'swing';
     if (s === 'perch') return fly ? 'hover1' : 'idle1';
+    if (s === 'swing') return 'swing';
     if (s === 'ride') return this.rideHit > 0 ? (armed ? 'wswing1' : 'shoot1') : 'idle0';
     if (s === 'dive') return this.st < 8 ? 'hover2' : 'dive' + (Math.floor(this.st / 3) % 2);
     if (s === 'dodge') return this.st < 11 ? 'roll' : 'crouch';
@@ -1276,7 +1876,8 @@ class Hero {
     this.trail = this.trail.filter(t => t.a > 0);
     const [sx, sy] = st.toScreen(this.x, this.z, this.h); const [gx, gy] = st.toScreen(this.x, this.z, 0);
     const lift = this.perch || this.ride ? this.h : this.h;
-    c.fillStyle = `rgba(0,0,0,${0.4 * clamp(1 - lift / 400, 0.2, 1)})`; c.beginPath(); c.ellipse(gx, gy, 34 * s, 9 * s, 0, 0, 7); c.fill();
+    if (!this.overGap) { c.fillStyle = `rgba(0,0,0,${0.4 * clamp(1 - lift / 400, 0.2, 1)})`; c.beginPath(); c.ellipse(gx, gy, 34 * s, 9 * s, 0, 0, 7); c.fill(); }
+    if (this.state === 'swing' && this.swing) return this.drawSwing(c, g, s, k);
     // hook cable
     if (this.hook) this.drawHook(c, g, s);
     if (this.iframes > 0 && this.state !== 'dodge' && this.state !== 'finisher' && this.state !== 'zip' && this.t % 6 < 3 && this.iframes > 10 && !this.dead) return;
@@ -1288,6 +1889,21 @@ class Hero {
     else drawFrame(c, 'hero_' + f, sx, sy, { s: k, dir: this.dir, flash, flashA: 0.6 });
     // procedurally swung weapon for weapons the hero art doesn't show
     if (this.weapon && !['pipe', 'crowbar'].includes(this.weapon.id)) this.drawHeldWeapon(c, g, sx, sy, s);
+  }
+  drawSwing(c, g, s, k) {
+    const st = g.stage, S = this.swing, ax = S.a.x - st.camX, ay = S.a.sy - 4;
+    const [hx, hy] = st.toScreen(this.x, this.z, this.h + ROOF.HAND);
+    c.strokeStyle = '#1a1a1e'; c.lineWidth = 5; c.beginPath(); c.moveTo(ax, ay); c.lineTo(hx, hy); c.stroke();
+    c.strokeStyle = '#9aa0aa'; c.lineWidth = 2.5; c.setLineDash([6, 3]); c.beginPath(); c.moveTo(ax, ay); c.lineTo(hx, hy); c.stroke(); c.setLineDash([]);
+    c.save(); c.translate(ax, ay); c.rotate(Math.atan2(hy - ay, hx - ax) - Math.PI / 2); drawFrame(c, 'item_claw_shut', 0, 10, { h: 30 }); c.restore();
+    const flash = this.flashT > 0 ? '#ff4040' : null;
+    // pose: the art already holds a cable angled ~45° — line it up with the real rope, pivoting on the hand
+    const f = Assets.meta.hero_swing, fw = f.w * k, fh = f.h * k, sd = S.th < 0 ? 1 : -1;
+    const ropeAng = Math.atan2(ax - hx, -(ay - hy)); // angle of hand->anchor from straight up
+    c.save(); c.translate(hx, hy); c.rotate(ropeAng - sd * 0.75);
+    // cut out the launcher's muzzle flash baked into this frame (evenodd hole)
+    c.beginPath(); c.rect(-fw * 2, -fh * 2, fw * 4, fh * 4); if (sd > 0) c.rect(-0.4 * fw, 0.03 * fh, 0.3 * fw, 0.28 * fh); else c.rect(0.1 * fw, 0.03 * fh, 0.3 * fw, 0.28 * fh); c.clip('evenodd');
+    drawFrame(c, 'hero_swing', 0.14 * fw * sd, 0.67 * fh, { s: k, dir: sd, flash, flashA: 0.6 }); c.restore();
   }
   drawHeldWeapon(c, g, sx, sy, s) {
     const W_ = WEAPONS[this.weapon.id]; let ang = -0.6, ox = 34, oy = -88;
@@ -1371,6 +1987,7 @@ class Enemy {
   yank(g, hero, stun) {
     if (this.dead) return; this.releaseToken(); this.setState('yanked'); this.yankFrom = { x: this.x, z: this.z };
     this.yankTo = { x: hero.x + hero.dir * 80, z: hero.z }; this.stunAfter = stun;
+    this.yankOff = g.stage.mode === 'roof' && this.pad && g.stage.padAt(this.yankTo.x) !== this.pad;
     if (this.armed) this.disarm(g, sign(hero.x - this.x));
     this.state = 'yanked'; this.st = 0;
   }
@@ -1389,12 +2006,26 @@ class Enemy {
     if (this.boss) g.bossDown(this);
     if (g.liveEnemies() === 0) { g.slowmo = Math.max(g.slowmo, 34); g.shake = Math.max(g.shake, 6); }
   }
+  startFall(g) {
+    if (this.falling || this.boss) return; this.falling = true; this.releaseToken();
+    if (!this.dead) { this.state = 'air'; this.st = 0; Particles.text(g, this.x, this.z - this.h - this.K.h - 30, pick(['WHOA!', 'NOOO!', 'AAAH!']), '#e8d9b0'); }
+    this.vh = Math.min(this.vh, 4); Audio2.play('whoosh');
+  }
   setState(s) { this.state = s; this.st = 0; if (s !== 'windup') this.data.counterOpen = false; }
   requestToken(g) { if (this.token) return true; const max = g.stage.L.n >= 8 ? 4 : g.stage.L.n >= 4 ? 3 : 2; if (attackTokens < max) { attackTokens++; this.token = true; return true; } return false; }
   releaseToken() { if (this.token) { attackTokens = Math.max(0, attackTokens - 1); this.token = false; } }
 
   update(g) {
     this.t++; this.st++; if (this.flash > 0) this.flash--; if (this.invuln > 0) this.invuln--;
+    if (this.falling) { // knocked off a roof
+      this.vh -= 0.8; this.h += this.vh; this.x += this.vx; this.vx *= 0.99;
+      if (this.z - this.h > H + 60) {
+        if (!this.dead) { g.cred.add(140, 'skydive'); g.score += 250; Particles.text(g, clamp(this.x, g.stage.camX + 120, g.stage.camX + W - 120), H - 90, 'OFF THE ROOF!', '#ffd36b'); this.die(g, { dir: sign(this.vx) || 1 }); }
+        this.alpha = 0;
+      }
+      return;
+    }
+    if (this.dead && g.stage.mode === 'roof' && this.pad && (this.x < this.pad.x0 || this.x > this.pad.x1)) { this.falling = true; return; }
     if (this.dead) { this.deadT++; this.vh -= 0.6; this.h = Math.max(0, this.h + this.vh); this.x += this.vx; this.vx *= 0.95; this.alpha = clamp(1 - (this.deadT - 30) / 30, 0, 1); return; }
     if (this.bleed > 0) { this.bleed--; if (this.bleed % 30 === 0) { this.hp -= 2; Particles.burst(g, this.x, this.z - this.K.h * 0.5, '#b02020', 3, 2); if (this.hp <= 0) this.die(g, { dir: 1 }); } }
     if (this.data.shieldT > 0 && --this.data.shieldT <= 0) this.data.shieldBroken = false;
@@ -1409,7 +2040,9 @@ class Enemy {
       case 'getup': if (this.st > 14) this.setState('idle'); return;
       case 'stunned': this.vx *= 0.85; this.vz *= 0.85; this.physics(g); if (--this.stun <= 0) this.setState('idle'); return;
       case 'yanked': {
-        const k = Math.min(1, this.st / 14); this.x = lerp(this.yankFrom.x, this.yankTo.x, easeOut(k)); this.z = lerp(this.yankFrom.z, this.yankTo.z, easeOut(k)); this.h = Math.sin(k * Math.PI) * 70;
+        const k = Math.min(1, this.st / 14);
+        if (this.yankOff && k > 0.35 && !g.stage.padAt(this.x)) { this.vx = sign(this.yankTo.x - this.yankFrom.x) * 6; this.vh = 3; this.startFall(g); g.cred.add(90, 'yankoff'); Particles.text(g, this.x, this.z - 230, 'YANKED OFF!', '#ffd36b'); return; }
+        this.x = lerp(this.yankFrom.x, this.yankTo.x, easeOut(k)); this.z = lerp(this.yankFrom.z, this.yankTo.z, easeOut(k)); this.h = Math.sin(k * Math.PI) * 70;
         if (k >= 1) { this.h = 0; this.setState('stunned'); this.stun = this.stunAfter; this.dir = sign(p.x - this.x) || 1; g.stage.clamp(this); }
         return;
       }
@@ -1436,7 +2069,7 @@ class Enemy {
     for (const o of g.enemies) if (o !== this && !o.dead && Math.abs(o.x - this.x) < 46 && Math.abs(o.z - this.z) < 22) { this.x += sign(this.x - o.x || 1) * 1.2; this.z += sign(this.z - o.z || 1) * 0.6; }
     g.stage.clamp(this);
   }
-  wallBounce(g) { const [x0, x1] = g.stage.xRange(this.z); if (this.x <= x0 + 4 || this.x >= x1 - 4) { this.vx = -this.vx * 0.6; g.cred.add(40, 'wallbounce'); Particles.text(g, this.x, this.z - 120, 'WALL BOUNCE', '#9fd3ff'); } }
+  wallBounce(g) { if (g.stage.mode === 'roof') return; const [x0, x1] = g.stage.xRange(this.z); if (this.x <= x0 + 4 || this.x >= x1 - 4) { this.vx = -this.vx * 0.6; g.cred.add(40, 'wallbounce'); Particles.text(g, this.x, this.z - 120, 'WALL BOUNCE', '#9fd3ff'); } }
   // generic telegraphed melee: windup -> active -> recover
   melee(g, p, o) {
     const K = this.K;
@@ -1746,6 +2379,7 @@ const G = {
     this.hitstop = 0; this.shake = 0; this.slowmo = 0; this.flash = 0; this.whiteout = 0; this.lightning = 0; this.acc = 0;
     this.score = 0; this.kills = 0; this.acorns = 0; this.playT = 0; this.damage = 0; this.go = 0; this.boss = null; this.bosses = []; this.arenaWaves = null;
     this.cred = makeCred(this); this.over = null; this.results = null; this.paused = false; this.card = 200; attackTokens = 0; this.lastHp = this.hero.hp;
+    this.cardTop = null; this.cardMain = null;
     this.screen = 'play'; this.toasts = []; this.tutorial = n === 1 ? 0 : 99;
     Audio2.startMusic(L.music); Audio2.music.intensity = 0.2; Audio2.setRain(0.035 * L.rain);
     const lines = (n === 1 && !Save.data.seenIntro) ? STORY.prologue.concat(STORY.intro[0]) : STORY.intro[n - 1];
@@ -1845,6 +2479,7 @@ const G = {
     for (const e of this.enemies) {
       if (e.dead || e.state !== 'stunned' || e.boss || Math.abs(e.x - h.x) > 110 || Math.abs(e.z - h.z) > 44) continue;
       if (this.stage.mode === 'street') { for (const p of this.stage.props) if (!p.dead && (p.car || p.kind === 'trashcan') && Math.abs(p.x - e.x) < 220 && Math.abs(p.z - e.z) < 90) return { e, prop: p, tx: p.x - sign(p.x - e.x) * p.w * 0.3, tz: p.z, name: p.car ? 'ENGINE-BAY SLAM!' : 'LID SLAM!' }; }
+      else if (this.stage.mode === 'roof') { const P = e.pad || this.stage.padAt(e.x); if (P) { const dl = e.x - P.x0, dr = P.x1 - e.x; if (Math.min(dl, dr) < 180) { const left = dl < dr; return { e, prop: null, tx: left ? P.x0 - 80 : P.x1 + 80, tz: e.z, name: 'OVER THE LEDGE!' }; } } }
       else { const [x0, x1] = this.stage.xRange(e.z); const nearWall = e.x - x0 < 160 || x1 - e.x < 160; if (nearWall) { const left = e.x - x0 < 160; const names = { 7: 'VAT DUNK!', 8: 'OVER THE RAIL!', 9: 'NEON SHOCK!', 10: 'DEFENESTRATION!', 4: 'SLUDGE DUNK!' }; return { e, prop: null, tx: left ? x0 : x1, tz: e.z, name: names[this.level] || 'WALL SLAM!' }; } }
     }
     return null;
@@ -1911,7 +2546,7 @@ const G = {
     c.save();
     if (this.shake > 0) c.translate(rand(-this.shake, this.shake), rand(-this.shake, this.shake) * 0.6);
     st.drawBack(c, this);
-    c.save(); if (st.zoom !== 1) { c.translate(W / 2, H * 0.62); c.scale(st.zoom, st.zoom); c.translate(-W / 2, -H * 0.62); }
+    c.save(); if (st.slideY) c.translate(0, st.slideY); if (st.zoom !== 1) { c.translate(W / 2, H * 0.62); c.scale(st.zoom, st.zoom); c.translate(-W / 2, -H * 0.62); }
     for (const z of this.hazards) if (z.type === 'ring') drawHazard(z, c, this);
     st.drawAnchors(c, this);
     // depth-sorted draw list
@@ -1931,7 +2566,7 @@ const G = {
     st.drawFore(c, this);
     st.drawWarn(c, this);
     // weather + vignette
-    if (this.L.rain > 0 && st.mode === 'street') this.drawRain(c);
+    if (this.L.rain > 0 && (st.mode === 'street' || (st.mode === 'roof' && st.roofTheme().outdoor))) this.drawRain(c);
     if (!this.vig) { this.vig = makeCanvas(W, H); const v = this.vig.getContext('2d'); const vg = v.createRadialGradient(W / 2, H / 2, H * 0.4, W / 2, H / 2, H * 1.0); vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.55)'); v.fillStyle = vg; v.fillRect(0, 0, W, H); }
     c.drawImage(this.vig, 0, 0);
     if (st.trans) { const T = st.trans, a = T.phase === 'out' ? T.t / T.dur : 1 - T.t / T.dur; c.fillStyle = `rgba(0,0,0,${clamp(a, 0, 1)})`; c.fillRect(0, 0, W, H); }
@@ -2003,11 +2638,11 @@ const HUD = {
       bar(c, x, y, w, 16, hp / mx, '#6b0f0f', '#e74c3c');
       if (b.kind === 'nadia' && b.data.life) txt(c, '♥'.repeat(b.data.life), x + w, y + 14, 12, '#e0b8ff', 'right');
     }
-    if (g.go > 0 && g.go % 30 < 18 && g.stage.mode === 'street') txt(c, 'GO  →', W - 160, H / 2, 40, '#ffd36b', 'center');
+    if (g.go > 0 && g.go % 30 < 18 && g.stage.mode !== 'arena') txt(c, 'GO  →', W - 160, H / 2, 40, '#ffd36b', 'center');
     if (g.card > 0 && !g.dialogue) {
       const a = clamp(Math.min(g.card / 30, (200 - g.card) / 20), 0, 1); c.save(); c.globalAlpha = a;
       c.fillStyle = 'rgba(0,0,0,.6)'; c.fillRect(0, H / 2 - 70, W, 130);
-      txt(c, 'LEVEL ' + g.level, W / 2, H / 2 - 28, 18, '#c0392b', 'center'); txt(c, g.L.name.toUpperCase(), W / 2, H / 2 + 18, 46, '#f0e6d2', 'center'); c.restore();
+      txt(c, g.cardTop || ('LEVEL ' + g.level), W / 2, H / 2 - 28, 18, '#c0392b', 'center'); txt(c, g.cardMain || g.L.name.toUpperCase(), W / 2, H / 2 + 18, 46, '#f0e6d2', 'center'); c.restore();
     }
     g.toasts.forEach((t, i) => { const a = Math.min(1, t.t / 10, (220 - t.t) / 30); c.save(); c.globalAlpha = a; c.font = `bold 15px ${FONT}`; const w = c.measureText(t.msg).width + 34; panel(c, (W - w) / 2, 128 + i * 42, w, 32, '#c9a227', 0.82); txt(c, t.msg, W / 2, 150 + i * 42, 15, '#f5e6c0', 'center'); c.restore(); });
     if (Input.touchMode) Touch.draw(c);
@@ -2106,7 +2741,7 @@ const Screens = {
   },
   drawHowTo(g, c) {
     c.fillStyle = 'rgba(0,0,0,.88)'; c.fillRect(0, 0, W, H); txt(c, 'HOW TO PLAY', W / 2, 54, 30, '#f0e6d2', 'center');
-    const rows = [['Arrows / WASD', 'Move. Up and down walk deeper into or out of the street.'], ['Space', 'Jump. With Bio-Surge: hold to GLIDE, tap again to flap.'], ['J', 'Punch combo (x4). The 4th hit is a tail spin that disarms.'], ['K', 'Heavy guard-breaker. COUNTER when a thug shows a red "!". FINISHER on a stunned thug near a wreck or wall.'], ['L', 'Grappling hook: yank light thugs, zip to heavies for a dropkick, pull crates and weapons, swing up to perches, hijack moving cars.'], ['Shift', 'Dodge roll (invulnerable). Dodge an attack at the last moment for PERFECT DODGE.'], ['E / Q', 'Pick up a dropped weapon / throw it. Weapons break after a few hits.'], ['F', 'Flying Squirrel mode when the Bio-Surge meter is full. Golden Acorns also trigger it.'], ['Down + J (air)', 'While flying: SUPERSONIC DIVE-BOMB. Shatters shields, disarms, dents cars.'], ['Esc / P', 'Pause.   Gamepad and touch screens are supported.']];
+    const rows = [['Arrows / WASD', 'Move. Up and down walk deeper into or out of the street.'], ['Space', 'Jump. With Bio-Surge: hold to GLIDE, tap again to flap.'], ['J', 'Punch combo (x4). The 4th hit is a tail spin that disarms.'], ['K', 'Heavy guard-breaker. COUNTER when a thug shows a red "!". FINISHER on a stunned thug near a wreck or wall.'], ['L', 'Grappling hook: yank thugs, zip to heavies, pull crates and weapons, hijack cars. ROOFTOPS: L at a gap to swing, ← → to pump, JUMP to let go.'], ['Shift', 'Dodge roll (invulnerable). Dodge an attack at the last moment for PERFECT DODGE.'], ['E / Q', 'Pick up a dropped weapon / throw it. Weapons break after a few hits.'], ['F', 'Flying Squirrel mode when the Bio-Surge meter is full. Golden Acorns also trigger it.'], ['Down + J (air)', 'While flying: SUPERSONIC DIVE-BOMB. Shatters shields, disarms, dents cars.'], ['Esc / P', 'Pause.   Gamepad and touch screens are supported.']];
     rows.forEach(([k, d], i) => { txt(c, k, 100, 112 + i * 52, 17, '#ffd36b'); c.font = `bold 15px ${FONT}`; wrap(c, d, 800).forEach((l, j) => txt(c, l, 330, 112 + i * 52 + j * 19, 15, '#ddd')); });
     txt(c, 'Street Cred rises when you MIX moves: punches, yanks, throws, counters, finishers, dive-bombs.', W / 2, H - 40, 14, '#9fd3ff', 'center');
     txt(c, 'Enter / Esc: back', W / 2, H - 14, 12, '#888', 'center');
