@@ -530,9 +530,9 @@ class Stage {
         if (ev.done || p.x < ev.x - (ev.type === 'arena' ? 0 : 520)) continue;
         if (ev.type === 'spawn') { ev.done = true; g.spawnGroup(ev.kinds, ev.x); this.lockX = ev.x + 420; }
         else if (ev.type === 'roof') { if (p.x >= ev.x && this.lockX == null && g.liveEnemies() === 0) { ev.done = true; g.toast('Street\'s barricaded! Grapple the fire escape (L) to take the rooftops'); g.after(200, () => { if (this.mode === 'street' && !this.roofDone) g.toast('Hold UP + L to aim at the fire escape'); }); } }
-        else if (ev.type === 'arena' && this.lockX == null && g.liveEnemies() === 0) { ev.done = true; this.enterArena(g, ev.boss); }
+        else if (ev.type === 'arena' && this.lockX == null && g.liveEnemies() === 0 && !g.encounterBusy()) { ev.done = true; this.enterArena(g, ev.boss); }
       }
-      if (this.lockX != null && g.liveEnemies() === 0) { this.lockX = null; g.go = 120; }
+      if (this.lockX != null && g.liveEnemies() === 0 && !g.encounterBusy()) { this.lockX = null; g.go = 120; }
       this.updateTraffic(g);
     } else if (this.mode === 'roof') this.updateRoof(g);
     for (const v of this.vents) v.t++;
@@ -763,7 +763,7 @@ class Car {
 //  separated by gaps you jump or swing across. Elevation is folded into
 //  the z (lane) coordinate, so toScreen() stays x-camX, z-h everywhere.
 // ============================================================
-const ROOF = { z0: 548, z1: 624, HAND: 166, ENTRY_X: 3000, BARRIER_X: 3330, RETURN_X: 3560 };
+const ROOF = { z0: 528, z1: 642, HAND: 166, ENTRY_X: 3000, BARRIER_X: 3330, RETURN_X: 3560 };
 
 const ROOF_THEMES = {
   1:  { strip: 'brick', style: 'brick', title: 'THE ROOFTOPS', wall: '#6e3526', mortar: '#2b1711', top: '#2b2a2e', lip: '#8d7c6b', win: '#ffcf7a', accent: '#ffb35a', anchor: 'crane', outdoor: true, props: ['tower', 'ac', 'bulk', 'chimney', 'antenna', 'billboard', 'ac'] },
@@ -1012,6 +1012,11 @@ Object.assign(Stage.prototype, {
       if (P.crate || r() < 0.5) props.push(this.mkRoofProp('crate', P.x0 + 140 + r() * (P.x1 - P.x0 - 280), zc + 20 + r() * 40, { golden: !!P.crate }));
       if (r() < 0.55) props.push(this.mkRoofProp('trashcan', P.x0 + 120 + r() * (P.x1 - P.x0 - 240), zc + 30 + r() * 40));
       if (T.outdoor && r() < 0.5) vents.push({ x: P.x0 + 200 + r() * (P.x1 - P.x0 - 400), z: zc + 40, t: r() * 100 });
+      // indoor catwalks: steam vents that blast on a timer
+      if (!T.outdoor && !P.start) { const nv = P.x1 - P.x0 > 800 ? 2 : 1; for (let i = 0; i < nv; i++) vents.push({ x: P.x0 + (i + 1) * (P.x1 - P.x0) / (nv + 1) + (r() - 0.5) * 80, z: zc + 30 + r() * 50, t: r() * 100, steam: true, cyc: Math.floor(r() * 200) }); }
+      // rotten roof panels that give way if you stand on them
+      P.weak = [];
+      if (!P.start && !P.last) { const nw = n >= 4 && P.x1 - P.x0 > 800 ? 2 : 1; for (let i = 0; i < nw; i++) { const cx = P.x0 + 200 + (i + 0.5) * (P.x1 - P.x0 - 400) / nw + (r() - 0.5) * 80; P.weak.push({ x0: cx - 60, x1: cx + 60, state: 'solid', t: 0 }); } }
     }
     // lookouts: a thug waiting on the far side of a gap — yank him off before you cross
     const ranged = L.pool.filter(k => ['thrower', 'sniper'].includes(KINDS[k].ai));
@@ -1022,7 +1027,8 @@ Object.assign(Stage.prototype, {
     this.buildRoofArt(r);
   },
   mkRoofProp(kind, x, z, opt = {}) { const p = this.mkArenaProp(kind, x, z); return Object.assign(p, opt); },
-  padAt(x) { for (const P of this.pads || []) if (x >= P.x0 && x <= P.x1) return P; return null; },
+  padAt(x) { for (const P of this.pads || []) if (x >= P.x0 && x <= P.x1) { if (P.weak) for (const k of P.weak) if (k.state === 'gone' && x > k.x0 && x < k.x1) return null; return P; } return null; },
+  holeAt(P, x) { if (P && P.weak) for (const k of P.weak) if (k.state === 'gone' && x > k.x0 && x < k.x1) return k; return null; },
   nearestPad(x) { let b = null, bd = 1e9; for (const P of this.pads) { const d = x < P.x0 ? P.x0 - x : x > P.x1 ? x - P.x1 : 0; if (d < bd) { bd = d; b = P; } } return b; },
   band(P) { return [ROOF.z0 - P.elev, ROOF.z1 - P.elev]; },
   // pre-render every pad (building top + facade + back props) and the mid-distance skyline
@@ -1104,12 +1110,16 @@ Object.assign(Stage.prototype, {
     if (L) { const span = L.x1 - L.x0; tx = span + 160 < W ? (L.x0 + L.x1) / 2 - W / 2 : clamp(tx, L.x0 - 80, L.x1 + 80 - W); }
     tx = clamp(tx, 0, this.roofLen - W);
     this.camX = lerp(this.camX, tx, 0.1);
+    // never let the camera edge stop the hero: it gets dragged along instead
+    if (!L) this.camX = clamp(this.camX, p.x - W + 220, p.x - 220);
+    this.camX = clamp(this.camX, 0, this.roofLen - W);
     // fights: lock onto the pad when the hero lands on it
     for (const gr of this.roofGroups) {
       if (gr.done || !p.pad || p.pad !== gr.pad || p.overGap || p.x < gr.pad.x0 + 120 || p.h > 40) continue;
       gr.done = true; this.roofLock = gr.pad; this.spawnRoofGroup(g, gr);
     }
-    if (L && !g.enemies.some(e => !e.dead && e.pad === L && !e.falling)) { this.roofLock = null; g.go = 120; Audio2.play('clear'); }
+    if (L && !g.encounterBusy() && !g.enemies.some(e => !e.dead && e.pad === L && !e.falling)) { this.roofLock = null; g.go = 120; Audio2.play('clear'); }
+    this.updateHazards(g);
     for (const lk of this.roofLookouts) {
       if (lk.done || p.x < lk.pad.x0 - 950 || p.pad === lk.pad) continue; lk.done = true;
       const [z0, z1] = this.band(lk.pad), e = new Enemy(lk.kind, lk.x, (z0 + z1) / 2, { enter: 10 }); e.pad = lk.pad; e.dir = -1; e.cd = 90; e.lookout = true; g.enemies.push(e);
@@ -1121,17 +1131,107 @@ Object.assign(Stage.prototype, {
     for (const v of this.roofVents) v.t++;
   },
   spawnRoofGroup(g, gr) {
-    const P = gr.pad, pool = this.L.pool, p = g.hero;
-    for (let i = 0; i < gr.size; i++) {
-      const k = pool[Math.floor(Math.random() * pool.length)];
-      let x = P.x0 + 80 + Math.random() * (P.x1 - P.x0 - 160); if (Math.abs(x - p.x) < 220) x = p.x + (x < p.x ? -1 : 1) * 260;
-      x = clamp(x, P.x0 + 60, P.x1 - 60);
-      const [z0, z1] = this.band(P);
-      const e = new Enemy(k, x, lerp(z0 + 6, z1 - 6, Math.random()), { enter: 40 + i * 12, h: 360 + i * 70 });
-      e.pad = P; e.dir = sign(p.x - x) || -1; e.cd = 60 + i * 30; g.enemies.push(e);
-    }
-    g.toast(pick(['They dropped in from the water towers!', 'Ambush on the roof!', 'Crew on the ledge!']));
+    const pool = this.L.pool; g.startEncounter(Array.from({ length: gr.size }, () => pool[Math.floor(Math.random() * pool.length)]), { pad: gr.pad, max: Math.max(2, g.maxActive() - 1) });
+    g.toast(pick(['Watch the shadows — they\'re dropping in!', 'Ambush on the roof!', 'Crew incoming from above!']));
     Audio2.play('alert');
+  },
+  // ---------------- rooftop hazards ----------------
+  updateHazards(g) {
+    const p = g.hero, T = this.roofTheme(), n = this.L.n;
+    // 1) rotten panels: creak, crack, collapse
+    for (const P of this.pads) for (const k of P.weak) {
+      if (k.state === 'gone') continue;
+      const onIt = a => !a.dead && !a.falling && a.pad === P && a.x > k.x0 + 6 && a.x < k.x1 - 6 && a.h <= 2 && !a.overGap;
+      const load = onIt(p) || g.enemies.some(e => onIt(e) && (e.K.heavy || e.state === 'down'));
+      if (k.state === 'solid') { if (load) { if (++k.t > 18) { k.state = 'crack'; k.t = 0; Audio2.play('block'); if (!this.crackTip) { this.crackTip = true; g.toast('That roof is rotten — keep moving!'); } } } else k.t = Math.max(0, k.t - 1); }
+      else if (k.state === 'crack') {
+        k.t++; if (k.t % 6 === 0) Particles.dust(g, rand(k.x0, k.x1), this.band(P)[1] - rand(0, 60), 2);
+        if (k.t > 42) { k.state = 'gone'; Audio2.play('heavy'); g.shake = Math.max(g.shake, 6);
+          for (let i = 0; i < 16; i++) Particles.add(g, { x: rand(k.x0, k.x1), y: this.band(P)[0] + rand(0, 90), vx: rand(-3, 3), vy: rand(-6, -1), col: pick(['#3a3430', '#5a4a3a', '#22201e']), life: 50, size: rand(4, 9), grav: 0.5 });
+          for (const e of g.enemies) if (!e.dead && !e.falling && e.pad === P && e.x > k.x0 && e.x < k.x1) { e.vx = 0; e.startFall(g); }
+        }
+      }
+    }
+    // 2) wind gusts on open rooftops push everyone toward the edges
+    if (T.outdoor) {
+      const Wd = this.wind || (this.wind = { phase: 'calm', t: 420 + Math.random() * 240, dir: 1 });
+      if (--Wd.t <= 0) {
+        if (Wd.phase === 'calm') { Wd.phase = 'warn'; Wd.t = 75; Wd.dir = Math.random() < 0.5 ? -1 : 1; Audio2.play('whoosh'); g.toast(Wd.dir > 0 ? 'WIND GUST  →  brace yourself!' : '←  WIND GUST  brace yourself!'); }
+        else if (Wd.phase === 'warn') { Wd.phase = 'gust'; Wd.t = 120; }
+        else { Wd.phase = 'calm'; Wd.t = 560 + Math.random() * 360 - n * 20; }
+      }
+      this.gustF = Wd.phase === 'gust' ? Wd.dir * (1.25 + n * 0.04) * Math.min(1, (120 - Wd.t) / 20) : 0;
+      if (Wd.phase !== 'calm' && g.frame % 2 === 0) for (let i = 0; i < (Wd.phase === 'gust' ? 3 : 1); i++) Particles.add(g, { x: this.camX + (Wd.dir > 0 ? -20 : W + 20), y: rand(60, 640), vx: Wd.dir * rand(18, 28), vy: rand(-0.5, 0.5), col: 'rgba(220,230,255,.35)', life: 60, size: 2, grav: 0, drag: 1, type: 'streak' });
+      if (this.gustF) {
+        if (!['swing', 'perch', 'climb', 'zip'].includes(p.state)) p.x += this.gustF * (p.onGround ? 1 : 1.4);
+        for (const e of g.enemies) if (!e.dead && !e.falling && e.state !== 'yanked') { e.x += this.gustF * (e.K.heavy ? 0.4 : 0.9); if (e.h > 2 || ['air', 'down', 'hurt', 'stagger', 'stunned'].includes(e.state)) e.vx += this.gustF * 0.12; }
+      }
+    } else this.gustF = 0;
+    // 3) steam vents on catwalks
+    for (const v of this.roofVents) {
+      if (!v.steam) continue; v.cyc++;
+      const ph = v.cyc % 300; v.phase = ph < 200 ? 'idle' : ph < 250 ? 'warn' : 'blast';
+      if (!this.onScreen(v.x, 100)) continue;
+      if (v.phase === 'warn' && g.frame % 4 === 0) Particles.add(g, { x: v.x + rand(-10, 10), y: v.z - 4, vx: rand(-0.5, 0.5), vy: rand(-2, -1), col: 'rgba(230,235,240,.35)', life: 25, size: rand(4, 8), grav: 0, type: 'puff' });
+      if (v.phase === 'blast') {
+        if (g.frame % 2 === 0) for (let i = 0; i < 3; i++) Particles.add(g, { x: v.x + rand(-16, 16), y: v.z - rand(0, 20), vx: rand(-1, 1), vy: rand(-11, -7), col: 'rgba(235,240,245,.5)', life: 30, size: rand(12, 22), grav: 0, type: 'puff' });
+        if (ph === 250) Audio2.play('whoosh');
+        if (Math.abs(p.x - v.x) < 48 && Math.abs(p.z - v.z) < 40 && p.h < 130 && p.state !== 'swing') { if (p.hurt(g, 12, sign(p.x - v.x) || 1, false)) { p.vh = 10; } }
+        for (const e of g.enemies) if (!e.dead && !e.falling && Math.abs(e.x - v.x) < 48 && Math.abs(e.z - v.z) < 40 && e.h < 60 && !e.boss) e.takeHit(g, { dmg: 10, dir: sign(e.x - v.x) || 1, kb: 8, launch: true, src: 'steam' });
+      }
+    }
+    // 4) searchlight: stand in the beam too long and a Syndicate marksman takes the shot
+    if (T.outdoor && n >= 2) {
+      const S = this.light || (this.light = { lock: 0, phase: 'sweep', t: 0, cx: 0, cy: 0, cd: 240 });
+      S.bx = this.camX + W / 2 + Math.sin(g.time * 0.55) * W * 0.42;
+      if (this.roofLock || p.state === 'swing') { S.lock = Math.max(0, S.lock - 3); if (S.phase === 'aim') S.phase = 'sweep'; }
+      else if (S.phase === 'sweep') {
+        if (S.cd > 0) S.cd--;
+        const inBeam = Math.abs(p.x - S.bx) < 80 && S.cd <= 0; S.lock = clamp(S.lock + (inBeam ? 1 : -2), 0, 60);
+        if (S.lock >= 40) { S.phase = 'aim'; S.t = 54; S.cx = p.x; S.cy = p.z - p.h - 80; Audio2.play('alert'); if (!this.lightTip) { this.lightTip = true; g.toast('SPOTTED! Get out of the crosshair!'); } }
+      } else if (S.phase === 'aim') {
+        S.cx = lerp(S.cx, p.x, 0.07); S.cy = lerp(S.cy, p.z - p.h - 80, 0.07);
+        if (--S.t <= 0) {
+          S.phase = 'sweep'; S.lock = 0; S.cd = 200; Audio2.play('boom'); g.shake = Math.max(g.shake, 5);
+          Particles.burst(g, S.cx, S.cy, '#ffd36b', 14, 7);
+          if (Math.abs(p.x - S.cx) < 56 && Math.abs((p.z - p.h - 80) - S.cy) < 80) p.hurt(g, 14, sign(p.x - S.cx) || 1, true);
+          for (const e of g.enemies) if (!e.dead && Math.abs(e.x - S.cx) < 56 && Math.abs((e.z - e.h - 70) - S.cy) < 80) { e.takeHit(g, { dmg: 30, dir: 1, kb: 8, launch: true, src: 'boom' }); Particles.text(g, e.x, e.z - 200, 'FRIENDLY FIRE!', '#9fd3ff'); g.cred.add(60, 'friendlyfire'); }
+        }
+      }
+    }
+  },
+  drawHazards(c, g) {
+    const cx = this.camX, T = this.roofTheme();
+    // panels
+    for (const P of this.pads) for (const k of P.weak) {
+      const x0 = k.x0 - cx, x1 = k.x1 - cx; if (x1 < -20 || x0 > W + 20) continue;
+      const [z0, z1] = this.band(P), y0 = z0 - 10, y1 = z1 + 8, sh = k.state === 'crack' ? rand(-2, 2) : 0;
+      if (k.state === 'gone') {
+        const gr = c.createLinearGradient(0, y0, 0, y1 + 60); gr.addColorStop(0, '#050608'); gr.addColorStop(1, 'rgba(5,6,8,.85)');
+        c.fillStyle = gr; c.beginPath(); c.moveTo(x0, y0 + 6); for (let x = x0; x <= x1; x += 15) c.lineTo(x, y0 + ((x * 7) % 9)); c.lineTo(x1, y1 + 50); for (let x = x1; x >= x0; x -= 15) c.lineTo(x, y1 + 40 + ((x * 5) % 12)); c.closePath(); c.fill();
+        continue;
+      }
+      c.save(); c.translate(sh, 0); c.globalAlpha = k.state === 'crack' ? 0.95 : 0.55;
+      c.fillStyle = 'rgba(60,40,25,.35)'; c.fillRect(x0, y0 + 4, x1 - x0, y1 - y0 - 8);
+      c.strokeStyle = 'rgba(10,8,6,.9)'; c.lineWidth = k.state === 'crack' ? 2.5 : 1.5; c.beginPath();
+      for (let i = 0; i < 5; i++) { let x = x0 + 12 + i * (x1 - x0 - 24) / 4, y = y0 + 8; c.moveTo(x, y); for (let j = 0; j < 4; j++) { x += ((i * 13 + j * 7) % 11) - 5; y += (y1 - y0 - 16) / 4; c.lineTo(x, y); } }
+      c.stroke(); c.restore();
+    }
+    // searchlight beam + crosshair
+    const S = this.light;
+    if (S && T.outdoor && this.L.n >= 2) {
+      const bx = S.bx - cx; c.save(); c.globalCompositeOperation = 'lighter';
+      const a = this.roofLock ? 0.05 : 0.12 + S.lock / 60 * 0.12, gr = c.createLinearGradient(0, 0, 0, H);
+      gr.addColorStop(0, `rgba(255,250,220,${a * 1.6})`); gr.addColorStop(1, `rgba(255,250,220,${a * 0.6})`);
+      c.fillStyle = gr; c.beginPath(); c.moveTo(bx - 24, 0); c.lineTo(bx + 24, 0); c.lineTo(bx + 95, H); c.lineTo(bx - 95, H); c.fill(); c.restore();
+      if (S.phase === 'aim') {
+        const x = S.cx - cx, y = S.cy, k = S.t / 54, r = 24 + 36 * k;
+        c.strokeStyle = g.frame % 6 < 3 ? '#ff3b3b' : '#ffd36b'; c.lineWidth = 3; c.beginPath(); c.arc(x, y, r, 0, 7); c.moveTo(x - r - 10, y); c.lineTo(x - r + 12, y); c.moveTo(x + r - 12, y); c.lineTo(x + r + 10, y); c.moveTo(x, y - r - 10); c.lineTo(x, y - r + 12); c.moveTo(x, y + r - 12); c.lineTo(x, y + r + 10); c.stroke();
+        c.strokeStyle = 'rgba(255,40,40,.35)'; c.lineWidth = 1.5; c.beginPath(); c.moveTo(W + 20, -20); c.lineTo(x, y); c.stroke();
+      }
+    }
+    // steam vent grates (indoor)
+    for (const v of this.roofVents) if (v.steam && this.onScreen(v.x)) { const [sx, sy] = this.toScreen(v.x, v.z, 0); c.fillStyle = '#16181c'; c.fillRect(sx - 30, sy - 8, 60, 16); c.fillStyle = v.phase === 'warn' && g.frame % 8 < 4 ? '#ff6a3a' : '#3a3e46'; for (let i = -24; i < 26; i += 8) c.fillRect(sx + i, sy - 6, 4, 12); }
   },
 
   // ---------------- collision / bounds ----------------
@@ -1139,12 +1239,13 @@ Object.assign(Stage.prototype, {
     if (isHero) return this.clampHeroRoof(a);
     let P = a.pad; if (!P) { P = this.padAt(a.x) || this.nearestPad(a.x); a.pad = P; }
     if (a.falling) return;
+    if (a instanceof Enemy && !a.boss && a.h <= 2 && this.holeAt(P, a.x)) { a.vx *= 0.3; a.startFall(G); return; }
     const [z0, z1] = this.band(P); a.z = clamp(a.z, z0, z1);
     const lo = P.x0 + 24, hi = P.x1 - 24;
     if (a.x >= lo && a.x <= hi) return;
     if (a instanceof Enemy) {
       const out = a.x < lo ? -1 : 1, involuntary = a.dead || ['air', 'down', 'hurt', 'stagger', 'stunned'].includes(a.state);
-      if (involuntary && !a.boss && sign(a.vx) === out && Math.abs(a.vx) > 1.2) { if (a.x < P.x0 - 6 || a.x > P.x1 + 6) a.startFall(G); return; }
+      if (involuntary && !a.boss && ((sign(a.vx) === out && Math.abs(a.vx) > 1.2) || sign(this.gustF || 0) === out)) { if (a.x < P.x0 - 6 || a.x > P.x1 + 6) a.startFall(G); return; }
     }
     a.x = clamp(a.x, lo, hi);
   },
@@ -1153,15 +1254,18 @@ Object.assign(Stage.prototype, {
     const Q = this.padAt(p.x), from = p.lastX != null ? p.lastX : p.x;
     if (Q && Q !== p.pad) {
       const d = Q.elev - p.pad.elev, nh = p.h - d;
+      if (nh < -4 && nh > -110 && p.vh <= 4 && ['free', 'attack', 'hurt'].includes(p.state) && !p.dead) { p.startClimb(G, Q, from < Q.x0 ? 1 : -1, nh, d); return; }
       if (nh < -4) { p.x = from < Q.x0 ? Q.x0 - 1 : Q.x1 + 1; p.vx = 0; if (p.swing) p.releaseSwing(G, 0.2); p.overGap = true; }
       else { p.z -= d; p.h = nh; p.pad = Q; p.overGap = false; }
     } else if (!Q) p.overGap = true;
-    else if (p.overGap) { if (p.h < -4) { p.x = from < (Q.x0 + Q.x1) / 2 ? Q.x0 - 1 : Q.x1 + 1; p.vx = 0; } else p.overGap = false; }
+    else if (p.overGap) {
+      if (p.h < -4 && p.h > -110 && p.vh <= 4 && ['free', 'attack', 'hurt'].includes(p.state) && !p.dead && !this.holeAt(Q, p.x)) { const hole = Q.weak.find(k => k.state === 'gone' && Math.abs(from - (k.x0 + k.x1) / 2) < 70); const dir = hole ? (from < (hole.x0 + hole.x1) / 2 ? -1 : 1) : (from < (Q.x0 + Q.x1) / 2 ? 1 : -1); p.startClimb(G, Q, dir, p.h, 0); return; }
+      if (p.h < -4) { p.x = from < (Q.x0 + Q.x1) / 2 ? Q.x0 - 1 : Q.x1 + 1; p.vx = 0; } else p.overGap = false; }
     const P = p.pad, [z0, z1] = this.band(P); p.z = clamp(p.z, z0, z1);
-    let lo = Math.max(30, this.camX + 24), hi = Math.min(this.roofLen - 30, this.camX + W - 24);
+    let lo = 30, hi = this.roofLen - 30;
     if (this.roofLock) { lo = Math.max(lo, this.roofLock.x0 + 22); hi = Math.min(hi, this.roofLock.x1 - 22); }
     p.x = clamp(p.x, lo, Math.max(lo, hi));
-    if (!p.overGap && p.h <= 1 && p.state === 'free' && P) p.safe = { x: clamp(p.x, P.x0 + 90, P.x1 - 90), z: p.z, pad: P };
+    if (!p.overGap && p.h <= 1 && p.state === 'free' && P) p.safe = { x: clamp(p.x, P.x0 + 170, P.x1 - 170), z: p.z, pad: P };
     p.lastX = p.x;
   },
   // the hero dropped into a gap
@@ -1169,9 +1273,9 @@ Object.assign(Stage.prototype, {
     const p = g.hero;
     if (p.x > this.roofExitX) return this.exitRoof(g);
     g.roofFalls = (g.roofFalls || 0) + 1;
-    const S = p.safe; p.x = S.x; p.pad = S.pad; p.z = S.z; p.h = 220; p.vh = 0; p.vx = 0; p.vz = 0; p.overGap = false; p.state = 'free'; p.swing = null; p.hook = null; p.lastX = p.x;
+    const S = p.safe; if (this.holeAt(S.pad, S.x)) S.x = S.pad.x0 + 170; for (const k of S.pad.weak) if (k.state !== 'gone' && S.x > k.x0 - 40 && S.x < k.x1 + 40) S.x = k.x0 - 60; p.x = S.x; p.pad = S.pad; p.z = S.z; p.h = 0; p.vh = 0; p.vx = 0; p.vz = 0; p.overGap = false; p.state = 'getup'; p.st = 0; p.swing = null; p.hook = null; p.lastX = p.x;
     p.iframes = 90; this.camX = clamp(p.x - W * 0.42, 0, this.roofLen - W);
-    const dmg = 8; p.hp = Math.max(1, p.hp - dmg); g.cred.hurt(); p.flashT = 12;
+    const dmg = 15; p.hp = Math.max(1, p.hp - dmg); g.cred.hurt(); p.flashT = 12;
     Particles.text(g, p.x, p.z - 260, '-' + dmg, '#ff6b6b'); Audio2.play('hurt');
     g.toast('Missed! Press L mid-fall to grab a hook');
   },
@@ -1214,8 +1318,9 @@ Object.assign(Stage.prototype, {
       const y = 300 + Math.sin(g.time * 5) * 8; c.fillStyle = 'rgba(255,211,107,.9)'; c.beginPath(); c.moveTo(ex + 120, y + 60); c.lineTo(ex + 90, y + 20); c.lineTo(ex + 150, y + 20); c.fill();
       txt(c, 'DROP', ex + 120, y, 22, '#ffd36b', 'center'); txt(c, 'back to the street', ex + 120, y + 88, 12, '#e8d9b0', 'center');
     }
+    this.drawHazards(c, g);
     // vents
-    for (const v of this.roofVents) { if (!this.onScreen(v.x)) continue; const [sx, sy] = this.toScreen(v.x, v.z, 0); c.fillStyle = '#1b1b1f'; c.beginPath(); c.ellipse(sx, sy, 30, 9, 0, 0, 7); c.fill(); c.strokeStyle = '#3a3a40'; c.lineWidth = 2; c.stroke(); if (v.t % 6 === 0) Particles.steam(g, v.x + rand(-12, 12), v.z, g.hero.fly > 0); }
+    for (const v of this.roofVents) { if (v.steam || !this.onScreen(v.x)) continue; const [sx, sy] = this.toScreen(v.x, v.z, 0); c.fillStyle = '#1b1b1f'; c.beginPath(); c.ellipse(sx, sy, 30, 9, 0, 0, 7); c.fill(); c.strokeStyle = '#3a3a40'; c.lineWidth = 2; c.stroke(); if (v.t % 6 === 0) Particles.steam(g, v.x + rand(-12, 12), v.z, g.hero.fly > 0); }
   },
   drawRoofAnchors(c, g) {
     const p = g.hero, T = this.roofTheme(), cx = this.camX;
@@ -1469,6 +1574,7 @@ class Hero {
       case 'getup': if (this.st > 14) this.state = 'free'; return;
       case 'perch': return this.updatePerch(g, ax, az);
       case 'swing': return this.updateSwing(g, ax, az);
+      case 'climb': return this.updateClimb(g);
       case 'ride': return this.updateRide(g, ax);
       case 'hook': return this.updateHook(g);
       case 'zip': return this.updateZip(g);
@@ -1823,6 +1929,19 @@ class Hero {
     if (I.buffered('grapple', 6)) { I.consume('grapple'); this.releaseSwing(g, 1.0); return this.fireHook(g); }
     if (I.buffered('dodge', 6) || (az > 0 && S.t > 10) || S.t > 420) { I.consume('dodge'); return this.releaseSwing(g, 0.6); }
   }
+  // ledge grab: caught a roof edge on the way down — haul yourself up
+  startClimb(g, Q, dir, nh, d) {
+    const st = g.stage; let x1 = this.x; for (let i = 0; i < 60 && st.padAt(x1) !== Q; i++) x1 += dir * 3; x1 += dir * 26;
+    this.state = 'climb'; this.st = 0; this.swing = null; this.hook = null; this.z -= d; this.pad = Q; this.overGap = false;
+    const [z0, z1] = st.band(Q); this.z = clamp(this.z, z0, z1);
+    this.climb = { h0: nh, x0: this.x, x1 }; this.vx = this.vz = this.vh = 0; this.dir = dir; this.iframes = Math.max(this.iframes, 14);
+    Audio2.play('land'); g.cred.add(20, 'ledgegrab');
+  }
+  updateClimb(g) {
+    const C = this.climb, k = Math.min(1, ++this.st / 16);
+    this.h = lerp(C.h0, 0, easeOut(k)); this.x = lerp(C.x0, C.x1, k);
+    if (k >= 1) { this.state = 'free'; this.h = 0; this.overGap = false; this.lastX = this.x; this.climb = null; }
+  }
   releaseSwing(g, boost) {
     const S = this.swing; this.swing = null; this.state = 'free'; this.st = 0; if (!S) return;
     const v = S.w * S.R; this.vx = v * Math.cos(S.th) * boost; this.vh = v * Math.sin(S.th) * boost + (boost >= 1 ? 3.5 : 0);
@@ -1874,7 +1993,7 @@ class Hero {
     if (this.iframes > 0 || this.dead || this.state === 'finisher') return false;
     if (this.weapon && WEAPONS[this.weapon.id].block && this.state === 'attack' && sign(dir) === -this.dir) { Audio2.play('block'); this.weapon.dur--; if (this.weapon.dur <= 0) this.breakWeapon(g); return false; }
     if (this.ride) this.leaveCar(g); if (this.perch) this.perch = null; this.hook = null; this.swing = null;
-    this.hp -= dmg; this.iframes = 40; this.flashT = 10; g.cred.hurt(); g.shake = Math.max(g.shake, 7); g.hitstop = Math.max(g.hitstop, 4);
+    this.hp -= dmg; this.iframes = 40; g.mercyT = 55; this.flashT = 10; g.cred.hurt(); g.shake = Math.max(g.shake, 7); g.hitstop = Math.max(g.hitstop, 4);
     Audio2.play('hurt'); Particles.burst(g, this.x, this.z - 90, '#ff5050', 10, 5); Particles.text(g, this.x, this.z - 200, '-' + Math.round(dmg), '#ff6b6b');
     if (this.hp <= 0) { this.hp = 0; this.dead = true; this.state = 'down'; this.st = 0; this.vh = 8; this.vx = dir * 6; g.heroDied(); return true; }
     if (knock || dmg >= 18) { this.state = 'down'; this.st = 0; this.vh = 9; this.vx = dir * 7; this.iframes = 70; if (this.weapon && Math.random() < 0.5) { g.dropWeapon(this.weapon.id, this.x, this.z, this.weapon.dur, true); this.weapon = null; } }
@@ -1890,6 +2009,7 @@ class Hero {
     if (s === 'zip') return this.zipT ? 'flykick' : 'swing';
     if (s === 'perch') return fly ? 'hover1' : 'idle1';
     if (s === 'swing') return 'swing';
+    if (s === 'climb') return this.st < 8 ? 'pick1' : 'getup';
     if (s === 'ride') return this.rideHit > 0 ? (armed ? 'wswing1' : 'shoot1') : 'idle0';
     if (s === 'dive') return this.st < 8 ? 'hover2' : 'dive' + (Math.floor(this.st / 3) % 2);
     if (s === 'dodge') return this.st < 11 ? 'roll' : 'crouch';
@@ -1899,7 +2019,7 @@ class Hero {
     if (s === 'hurt') return 'stagger';
     if (this.dead) return this.st > 30 ? 'kneel' : 'down';
     if (s === 'down' || s === 'getup') return s === 'getup' ? 'getup' : 'down';
-    if (!this.onGround) { if (fly) return this.glide ? 'glide' + (1 + Math.floor(this.t / 8) % 2) : 'hover' + (1 + Math.floor(this.t / 8) % 2); return this.vh > 2 ? 'run2' : 'swing'; }
+    if (!this.onGround) { if (fly) return this.glide ? 'glide' + (1 + Math.floor(this.t / 8) % 2) : 'hover' + (1 + Math.floor(this.t / 8) % 2); return this.vh > 2 ? 'run2' : 'crouch'; }
     if (Math.abs(this.vx) + Math.abs(this.vz) > 0.8) return 'run' + (Math.floor(this.t / 6) % 3);
     return armed ? 'ready' : 'idle' + (Math.floor(this.t / 14) % 3);
   }
@@ -2062,7 +2182,11 @@ class Enemy {
     this.vh = Math.min(this.vh, 4); Audio2.play('whoosh');
   }
   setState(s) { this.state = s; this.st = 0; if (s !== 'windup') this.data.counterOpen = false; }
-  requestToken(g) { if (this.token) return true; const max = g.stage.L.n >= 8 ? 4 : g.stage.L.n >= 4 ? 3 : 2; if (attackTokens < max) { attackTokens++; this.token = true; return true; } return false; }
+  // attack tokens: only a couple of thugs may commit to an attack at once, never from off screen,
+  // and nobody new commits for a beat right after the hero gets hit (no pile-on stunlocks)
+  maxTokens(g) { return g.level >= 4 ? 3 : 2; }
+  tokenFree(g) { return attackTokens < this.maxTokens(g) && !(g.mercyT > 0) && g.stage.onScreen(this.x, -30); }
+  requestToken(g) { if (this.token) return true; if (this.tokenFree(g) || (this.boss && attackTokens < this.maxTokens(g))) { attackTokens++; this.token = true; return true; } return false; }
   releaseToken() { if (this.token) { attackTokens = Math.max(0, attackTokens - 1); this.token = false; } }
 
   update(g) {
@@ -2138,6 +2262,16 @@ class Enemy {
     this.physics(g);
   }
   approach(g, p, reach, spd, laneTol = 22) {
+    // thugs without an attack slot hold a ring around the hero instead of mobbing him
+    if (!this.token && !this.boss && !(this.cd <= 0 && this.tokenFree(g))) {
+      if (this.data.ring == null) { this.data.ring = Math.floor(Math.random() * 3); this.data.zoff = rand(-55, 55); }
+      const side = this.data.side || sign(this.x - p.x) || 1, dist = 200 + this.data.ring * 55 + Math.sin(this.t * 0.025 + this.data.ring) * 26;
+      const [z0, z1] = g.stage.zRange(); const tx = p.x + side * dist, tz = clamp(p.z + this.data.zoff, z0, z1);
+      this.dir = sign(p.x - this.x) || this.dir;
+      if (Math.abs(tx - this.x) > 18 || Math.abs(tz - this.z) > 12) { this.state = 'walk'; this.walkTo(g, tx, tz, spd * 0.75); } else { this.state = 'idle'; this.vx *= 0.8; this.vz *= 0.8; }
+      if (Math.random() < 0.003) this.data.side = -side; // occasionally switch flanks
+      return false;
+    }
     const side = sign(this.x - p.x) || this.data.side; const tx = p.x + side * reach * 0.8, tz = p.z;
     this.dir = sign(p.x - this.x) || this.dir;
     const close = Math.abs(p.x - this.x) < reach && Math.abs(p.z - this.z) < laneTol;
@@ -2193,7 +2327,7 @@ class Enemy {
 const AI = {
   brawler(e, g, p, dx, adx, dz) {
     const K = e.K, armed = e.armed, reach = armed ? K.reach : 78;
-    if (['windup', 'attack', 'recover'].includes(e.state)) return e.melee(g, p, { windup: armed ? (K.guard ? 30 : 24) : 16, reach, dmg: armed ? K.dmg : Math.round(K.dmg * 0.7), lunge: armed ? 3 : 4, recover: armed ? 26 : 16, cdMin: armed ? 40 : 20 });
+    if (['windup', 'attack', 'recover'].includes(e.state)) return e.melee(g, p, { windup: armed ? (K.guard ? 30 : 24) : 22, reach, dmg: armed ? K.dmg : Math.round(K.dmg * 0.7), lunge: armed ? 3 : 4, recover: armed ? 26 : 16, cdMin: armed ? 40 : 20 });
     if (e.state === 'guard') { e.vx *= 0.8; e.dir = sign(dx) || e.dir; if (e.st > 70) { e.data.guarding = false; e.setState('idle'); } e.physics(g); return; }
     e.cd--;
     if (K.guard && armed && adx < 240 && p.state === 'attack' && Math.random() < 0.04) { e.setState('guard'); e.data.guarding = true; return; }
@@ -2223,7 +2357,7 @@ const AI = {
   },
   skirmisher(e, g, p, dx, adx, dz) {
     e.cd--;
-    if (e.state === 'windup') { e.vx *= 0.6; if (e.st >= 14) { e.setState('attack'); e.vx = e.dir * 13; Audio2.play('dash'); } e.physics(g); return; }
+    if (e.state === 'windup') { e.vx *= 0.6; if (e.st >= 20) { e.setState('attack'); e.vx = e.dir * 13; Audio2.play('dash'); } e.physics(g); return; }
     if (e.state === 'attack') { if (!e.hitHero && Math.abs(p.x - e.x) < 70 && Math.abs(p.z - e.z) < 34 && p.h < 90) e.hitHero = p.hurt(g, e.K.dmg, e.dir); e.vx *= 0.93; if (e.st > 16) { e.setState('recover'); e.hitHero = false; } e.physics(g); return; }
     if (e.state === 'recover') { e.walkTo(g, e.x + e.dir * 120, e.z + e.data.side * 60, e.K.spd); if (e.st > 24) { e.setState('idle'); e.cd = rand(30, 70); e.releaseToken(); } e.physics(g); return; }
     e.dir = sign(dx) || e.dir;
@@ -2278,7 +2412,7 @@ Enemy.prototype.onGroundDodge = function (g) {
 // ------------------------------------------------------------
 //  Boss AI
 // ------------------------------------------------------------
-function bossSummon(g, e, kinds) { Audio2.play('roar'); g.shake = 8; kinds.forEach((k, i) => g.spawnEnemy(k, i % 2 ? 'right' : 'left')); }
+function bossSummon(g, e, kinds) { Audio2.play('roar'); g.shake = 8; const room = Math.max(0, g.maxActive() - g.liveEnemies()); kinds.slice(0, room).forEach((k, i) => g.spawnEnemy(k, i % 2 ? 'right' : 'left')); }
 const BOSS_AI = {
   b_gnash(e, g, p, dx, adx, dz) {
     const d = e.data; e.cd--; e.phase = e.hp < e.maxHp * 0.5 ? 2 : 1; const sp = e.phase === 2 ? 1.25 : 1;
@@ -2427,6 +2561,7 @@ const G = {
     this.stage = new Stage(L); this.hero = new Hero(160, 600);
     this.enemies = []; this.projectiles = []; this.particles = []; this.hazards = []; this.pickups = [];
     this.hitstop = 0; this.shake = 0; this.slowmo = 0; this.flash = 0; this.whiteout = 0; this.lightning = 0; this.acc = 0;
+    this.enc = null; this.mercyT = 0;
     this.score = 0; this.kills = 0; this.acorns = 0; this.playT = 0; this.damage = 0; this.go = 0; this.boss = null; this.bosses = []; this.arenaWaves = null;
     this.cred = makeCred(this); this.over = null; this.results = null; this.paused = false; this.card = 200; attackTokens = 0; this.lastHp = this.hero.hp;
     this.cardTop = null; this.cardMain = null;
@@ -2441,12 +2576,70 @@ const G = {
   liveEnemies() { return this.enemies.filter(e => !e.dead && !e.data.decoy).length; },
 
   // ---------------- spawning ----------------
-  spawnGroup(kinds, x) {
-    const st = this.stage; kinds.forEach((k, i) => {
-      const fromRight = i % 3 !== 2, z = lerp(STREET.zMin + 10, STREET.zMax - 10, Math.random());
-      const ex = fromRight ? st.camX + W + 60 + i * 50 : st.camX - 60 - i * 30;
-      const e = new Enemy(k, ex, z, { side: fromRight ? 1 : -1, enter: 40 }); e.dir = fromRight ? -1 : 1; this.enemies.push(e);
-    });
+  spawnGroup(kinds, x) { this.startEncounter(kinds); },
+  // ---------------- encounter director ----------------
+  // Enemies arrive one at a time with a telegraph, never more than `max` on screen, light fodder first,
+  // specialists (ranged / heavy) capped so they can't stack. Gives every fight a readable build-up.
+  roleOf(k) { const K = KINDS[k]; return K.heavy ? 'heavy' : ['thrower', 'sniper'].includes(K.ai) ? 'ranged' : 'light'; },
+  maxActive() { return [3, 3, 4, 4, 4, 4, 5, 5, 5, 5][this.level - 1] || 4; },
+  startEncounter(kinds, opt = {}) {
+    const light = kinds.filter(k => this.roleOf(k) === 'light'), rest = kinds.filter(k => this.roleOf(k) !== 'light');
+    // open with fodder, specialists join mid-fight, at least one more fodder after each specialist
+    const q = light.splice(0, Math.min(2, light.length));
+    while (rest.length || light.length) { if (rest.length) q.push(rest.shift()); if (light.length) q.push(light.shift()); }
+    this.enc = { queue: q, warns: [], t: 0, first: Math.min(2, q.length), max: opt.max || this.maxActive(), pad: opt.pad || null, total: kinds.length };
+  },
+  encounterBusy() { return !!this.enc; },
+  updateEncounter() {
+    const E = this.enc; if (!E) return; const st = this.stage;
+    for (const w of E.warns) if (--w.t <= 0) { w.done = true; this.spawnFromWarn(w); }
+    E.warns = E.warns.filter(w => !w.done);
+    if (E.t > 0) E.t--;
+    const live = this.enemies.filter(e => !e.dead && !e.data.decoy && !e.lookout), active = live.length + E.warns.length;
+    if (E.queue.length && E.t <= 0 && active < E.max) {
+      const cap = { ranged: this.level >= 7 ? 2 : 1, heavy: this.level >= 8 ? 2 : 1, light: 9 };
+      const count = r => live.filter(e => this.roleOf(e.kind) === r).length + E.warns.filter(w => this.roleOf(w.kind) === r).length;
+      const i = E.queue.findIndex(k => count(this.roleOf(k)) < cap[this.roleOf(k)]);
+      if (i >= 0) {
+        const kind = E.queue.splice(i, 1)[0], h = this.hero;
+        // side: whichever flank has fewer thugs; ties go in front of the hero
+        const right = live.filter(e => e.x > h.x).length + E.warns.filter(w => w.side > 0).length, left = live.length + E.warns.length - right;
+        const side = right === left ? (h.dir || 1) : right < left ? 1 : -1;
+        const quick = E.first > 0; if (quick) E.first--;
+        E.warns.push({ kind, side, t: quick ? 24 : 56, T: quick ? 24 : 56, slot: Math.random() });
+        E.t = quick ? 14 : 70 + Math.random() * 40;
+        if (!quick) Audio2.play('alert');
+      }
+    }
+    if (!E.queue.length && !E.warns.length) this.enc = null;
+  },
+  spawnFromWarn(w) {
+    const st = this.stage, h = this.hero; let e;
+    if (st.mode === 'roof') {
+      const P = this.enc && this.enc.pad || h.pad; const [z0, z1] = st.band(P);
+      const x = w.x != null ? w.x : this.warnX(w);
+      e = new Enemy(w.kind, x, lerp(z0 + 8, z1 - 8, w.slot), { enter: 30, h: 420, side: w.side }); e.pad = P;
+    } else if (st.mode === 'arena') e = this.spawnEnemy(w.kind, w.side > 0 ? (w.slot < 0.35 ? 'far' : 'right') : 'left', { side: w.side });
+    else { const z = lerp(STREET.zMin + 14, STREET.zMax - 14, w.slot); e = new Enemy(w.kind, w.side > 0 ? st.camX + W + 60 : st.camX - 60, z, { side: w.side, enter: 40 }); }
+    if (!e) return; e.dir = sign(h.x - e.x) || -1; e.cd = 50 + Math.random() * 40;
+    if (!this.enemies.includes(e)) this.enemies.push(e);
+  },
+  warnX(w) { const st = this.stage, h = this.hero, P = (this.enc && this.enc.pad) || h.pad; if (w.x == null) { let x = h.x + w.side * (260 + w.slot * 220); x = clamp(x, P.x0 + 70, P.x1 - 70); if (Math.abs(x - h.x) < 180) x = clamp(h.x - w.side * 300, P.x0 + 70, P.x1 - 70); w.x = x; } return w.x; },
+  drawEncounterWarns(c) {
+    const E = this.enc; if (!E) return; const st = this.stage;
+    for (const w of E.warns) {
+      const k = 1 - w.t / w.T, pulse = (this.frame % 12) < 7;
+      if (st.mode === 'roof') { // a shadow grows where the thug will land
+        const P = E.pad || this.hero.pad, x = this.warnX(w), [z0, z1] = st.band(P), [sx, sy] = st.toScreen(x, lerp(z0 + 8, z1 - 8, w.slot), 0);
+        c.fillStyle = `rgba(0,0,0,${0.25 + 0.35 * k})`; c.beginPath(); c.ellipse(sx, sy, 12 + 30 * k, 4 + 8 * k, 0, 0, 7); c.fill();
+        if (pulse) { c.strokeStyle = 'rgba(255,80,60,.7)'; c.lineWidth = 2; c.beginPath(); c.ellipse(sx, sy, 44, 13, 0, 0, 7); c.stroke(); }
+        continue;
+      }
+      const x = w.side > 0 ? W - 34 : 34, y = st.mode === 'arena' ? 520 : lerp(STREET.zMin + 14, STREET.zMax - 14, w.slot) - 70;
+      c.save(); c.globalAlpha = pulse ? 1 : 0.55; c.fillStyle = '#e8b830';
+      c.beginPath(); c.moveTo(x + w.side * 22, y); c.lineTo(x - w.side * 14, y - 20); c.lineTo(x - w.side * 14, y + 20); c.fill();
+      c.fillStyle = '#111'; c.font = 'bold 20px monospace'; c.textAlign = 'center'; c.fillText('!', x + w.side * 2, y + 7); c.textAlign = 'left'; c.restore();
+    }
   },
   spawnEnemy(kind, where, opt = {}) {
     const st = this.stage; let x, z;
@@ -2467,9 +2660,9 @@ const G = {
       Audio2.play('roar'); Audio2.music.intensity = 1;
       this.say(STORY.boss[L.boss]);
     } else {
-      const size = 3 + Math.floor(n / 3);
-      this.arenaWaves = { i: 0, list: [Array.from({ length: size }, () => pick(pool)), Array.from({ length: size + 1 }, () => pick(pool))] };
-      this.toast('AMBUSH! Clear the room'); this.spawnWave();
+      const size = 5 + Math.floor(n / 2);
+      this.arenaWaves = { i: 0, list: [] }; this.startEncounter(Array.from({ length: size }, () => pick(pool)));
+      this.toast('AMBUSH! Clear the room');
     }
   },
   spawnWave() {
@@ -2477,7 +2670,7 @@ const G = {
     kinds.forEach((k, i) => { const e = this.spawnEnemy(k, ['far', 'left', 'right'][i % 3]); e.cd = 50 + i * 25; });
     if (w.i > 0) this.toast('Wave ' + (w.i + 1) + ' / ' + w.list.length);
   },
-  clearForArena(keepHero) { for (const e of this.enemies) e.releaseToken(); attackTokens = 0; this.enemies = []; this.projectiles = []; this.hazards = []; this.pickups = this.pickups.filter(p => p.weaponId && keepHero && false); this.stage.lockX = null; },
+  clearForArena(keepHero) { for (const e of this.enemies) e.releaseToken(); attackTokens = 0; this.enc = null; this.enemies = []; this.projectiles = []; this.hazards = []; this.pickups = this.pickups.filter(p => p.weaponId && keepHero && false); this.stage.lockX = null; },
   bossDown(e) {
     if (this.bosses.some(b => b !== e && !b.dead)) { this.toast(e.K.name + ' is down!'); return; }
     this.slowmo = 90; this.shake = 14; this.flash = 1; Audio2.play('clear'); Audio2.music.intensity = 0;
@@ -2571,9 +2764,10 @@ const G = {
     Particles.update(this); this.cred.update();
     if (this.L.rain > 0.5 && Math.random() < 0.0015) { this.lightning = 1; Audio2.play('thunder'); } if (this.lightning > 0) this.lightning -= 0.05;
     // arena flow
-    if (st.mode === 'arena' && !st.trans && this.arenaWaves && this.liveEnemies() === 0) {
-      const w = this.arenaWaves; w.i++;
-      if (w.i < w.list.length) this.spawnWave(); else { this.arenaWaves = null; Audio2.play('clear'); this.toast('ROOM CLEARED'); h.hp = Math.min(h.maxHp, h.hp + 15); this.after(70, () => st.exitArena(this)); }
+    if (!st.trans) this.updateEncounter();
+    if (this.mercyT > 0) this.mercyT--;
+    if (st.mode === 'arena' && !st.trans && this.arenaWaves && this.liveEnemies() === 0 && !this.enc) {
+      {  this.arenaWaves = null; Audio2.play('clear'); this.toast('ROOM CLEARED'); h.hp = Math.min(h.maxHp, h.hp + 15); this.after(70, () => st.exitArena(this)); }
     }
     if (h.hp < this.lastHp) this.damage += this.lastHp - h.hp; this.lastHp = h.hp;
     // tutorial prompts on level 1
@@ -2610,11 +2804,13 @@ const G = {
     list.sort((a, b) => a[0] - b[0]);
     for (const [, kind, o] of list) { if (kind === 0) st.drawProp(c, this, o); else o.draw(c, this); }
     for (const z of this.hazards) if (z.type === 'boom') drawHazard(z, c, this);
+    if (st.mode === 'roof') this.drawEncounterWarns(c);
     for (const e of this.enemies) if (e.data.aimLanes) { c.strokeStyle = `rgba(255,40,40,${0.3 + 0.4 * Math.sin(this.time * 30)})`; c.lineWidth = 3; for (const z of e.data.aimLanes) { const [ax, ay] = st.toScreen(e.x, z, 95); c.beginPath(); c.moveTo(ax, ay); c.lineTo(ax + e.dir * 1500, ay); c.stroke(); } }
     Particles.draw(c, this);
     c.restore();
     st.drawFore(c, this);
     st.drawWarn(c, this);
+    if (st.mode !== 'roof') this.drawEncounterWarns(c);
     // weather + vignette
     if (this.L.rain > 0 && (st.mode === 'street' || (st.mode === 'roof' && st.roofTheme().outdoor))) this.drawRain(c);
     if (!this.vig) { this.vig = makeCanvas(W, H); const v = this.vig.getContext('2d'); const vg = v.createRadialGradient(W / 2, H / 2, H * 0.4, W / 2, H / 2, H * 1.0); vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,0.55)'); v.fillStyle = vg; v.fillRect(0, 0, W, H); }
